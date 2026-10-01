@@ -53,70 +53,88 @@ GPU は週 30 時間まで、`/kaggle/working` は 20 GB まで保存されま�
 
 1. この `.ipynb` を Kaggle の **Code → New Notebook → File → Import Notebook** で取り込みます。
 2. 右上 **Settings** で **Accelerator = GPU T4 x2**、**Internet = On** にします。
-3. 下の「設定」セルを書き換えて、**Save & Run All (Commit)** または上から順に実行します。
+3. **セル1（曲のアイディア）** に STYLE と歌詞を書きます（プリセットも使えます）。
+   **セル2（生成の設定）** で長さ・品質を決めて、**Save & Run All (Commit)** または上から順に実行します。
+   - アイディアを次々試すなら、セル2の `QUICK_PREVIEW = True`（60秒・8ステップ）が便利です。
    - 長時間かかる曲は **Commit** 実行（最大12時間、ブラウザを閉じても継続）を推奨。対話実行は20分無操作で停止します。
    - 途中で止まっても、同じ設定でもう一度実行すれば続きから再開します。
 4. 出力は `/kaggle/working/outputs/<id>/`（`audio.flac` など）に保存され、ノートブックの Output からダウンロードできます。
 """
 
-CONFIG_CELL = '''
-# ============================ 設定（ここだけ編集） ============================
-# STYLE  : 「言語, ジャンル, ボーカル, 楽器, 雰囲気, テンポ」をカンマ区切りで。
-#          日本語で歌わせたいときは先頭を "Japanese" に（日本語の歌詞をそのまま書けます）
-# LYRICS : [Verse] / [Chorus] などのタグで区切り、1行7音節くらいが歌いやすい長さです
-import os, re, sys
-from pathlib import Path
+IDEA_CELL = '''
+# ============ 1) 曲のアイディア（ここだけ編集すれば試せます） ============
+# STYLE : 「言語, ジャンル, ボーカル, 楽器, 雰囲気, テンポ(BPM)」をカンマ区切りで並べます。
+#         日本語で歌わせたいときは先頭を "Japanese" にして、LYRICS に日本語をそのまま書けます。
+# LYRICS: [Verse] / [Chorus] などのタグで区切り、1行は7音節くらいが歌いやすい長さです。
+#         曲の長さ・品質は次のセル（2) 生成の設定）で決まります。
+import os, re
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # torch より先に必要
 
-# GPU メモリの断片化対策。torch を import する前に設定する必要があります（このセルが最初なので OK）
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-
-_DEFAULT_LYRICS = """[Verse]
+STYLE = (
+    "English, warm piano pop, expressive female voice, acoustic piano, "
+    "rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM"
+)
+LYRICS = """[Verse]
 Neon fades along the lane
 Footsteps keep the time of rain
 [Chorus]
 Let the day come into view
 Every road begins with you"""
 
-# 既定の歌詞の日本語訳（自分で書き換えたときは、この訳は無視してください）
+# --- アイディアのプリセット: use_preset('名前') を実行すると下の STYLE/LYRICS が入れ替わります ---
+PRESETS = {
+    "citypop_ja": {
+        "style": "Japanese, 80s city pop, female voice, smooth bass, glossy synth, "
+                 "tight drums, nostalgic night drive, 108 BPM",
+        "lyrics": """[Verse]
+交差点 青いネオン
+濡れた路面に 揺れる影
+[Chorus]
+夜が明けるまで このまま
+君の横顔 追いかけて""",
+    },
+    "ballad_ja": {
+        "style": "Japanese, warm piano ballad, gentle female voice, strings, "
+                 "slow brush drums, tender, 70 BPM",
+        "lyrics": """[Verse]
+窓辺に置いた 小さな花
+名前も知らずに 水をやる
+[Chorus]
+ありがとうと 言えなかった
+その言葉を 歌にする""",
+    },
+    "lofi_en": {
+        "style": "English, lofi hip hop, mellow female voice, dusty rhodes, vinyl noise, "
+                 "soft boom bap drums, rainy night, 78 BPM",
+        "lyrics": """[Verse]
+Rain on the window, slow cassette
+Coffee going cold, no regret
+[Chorus]
+Stay a little, let it loop
+Dusty keys and lazy groove""",
+    },
+    "rock_en": {
+        "style": "English, energetic rock, powerful male voice, distorted guitars, "
+                 "driving drums, anthemic chorus, 140 BPM",
+        "lyrics": """[Verse]
+Streetlight sparks on a broken sign
+Engine running, crossing the line
+[Chorus]
+Turn it up, we are not going home
+Tonight the highway is our own""",
+    },
+}
+
+# =================== ここから下は表示用（編集しなくてOK） ===================
+_DEFAULT_LYRICS = """[Verse]
+Neon fades along the lane
+Footsteps keep the time of rain
+[Chorus]
+Let the day come into view
+Every road begins with you"""
 _DEFAULT_LYRICS_JA = """[Verse]  ネオンが路地に消えていく／足音は雨の刻みを打つ
 [Chorus] 夜明けを迎えに行こう／どの道も君から始まる"""
 
-STYLE = (
-    "English, warm piano pop, expressive female voice, acoustic piano, "
-    "rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM"
-)
-LYRICS = _DEFAULT_LYRICS
-
-COT = "full"            # full（メロディ+コード譜を自動生成）/ melody / off（譜面なし）
-SECONDS = 120.0         # 生成する長さ（秒）。まずは 60〜120 秒で試すのがおすすめ
-SEED = 831001
-ODE_STEPS = 32          # 公式デフォルト。下げると速いが品質はトレードオフ（8〜16 で実験）
-PLAN_MAX_TOKENS = None  # ABC 譜生成の上限（公式は 4096）。スモークテスト時のみ 512〜1024 などに
-                        # 下げる。譜面が途中で切れる=品質が変わるので本番比較には使わないこと
-ABC = None              # 手持ちの ABC 譜を使う場合は文字列で指定（例: open("score.abc").read()）
-                        # ABC を渡すと譜面生成(plan)を丸ごと省略でき、その分速くなります
-
-OUTPUT_ID = "song-01"
-BUDGET_MINUTES = 600    # この実行で使う時間の上限（12h セッションなら 660 くらいまで可）
-SAFETY_MINUTES = 10     # セッション破棄に備えて残す余裕
-
-RUN_BENCHMARK = True    # 実モデルで実測ベンチを取る（1〜2分）。ETA を出してから本番へ
-FORCE_RUN = False       # ETA が予算を超えていても強行する
-
-INSTALL_MODE = "image"  # "image"(既定): 同梱の numpy/torch を保つ（安全・推奨）
-                        # "pinned": 公式ピン留め。numpy 2.2.6 を入れるため scipy/scikit-learn と
-                        #           衝突しうる（壊れたら Restart session して "image" に戻す）
-PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/working に置く（後で Dataset 化しやすい）
-REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"  # 自分の fork に差し替えてもOK
-REPO_REF = "main"       # fork の branch 名（例: "arena/01a0f78a-yue"）
-
-WORKDIR = Path("/kaggle/working") if Path("/kaggle").exists() else Path.cwd()
-REPO_DIR = WORKDIR / "YuE"
-OUTDIR = WORKDIR / "outputs" / OUTPUT_ID
-if PERSIST_MODEL:
-    os.environ["HF_HOME"] = str(WORKDIR / "hf-cache")
-
-# ---------------- ここから下は表示用（編集しなくてOK） ----------------
 _JA_TERMS = {
     "english": "英語", "japanese": "日本語", "chinese": "中国語", "korean": "韓国語",
     "spanish": "スペイン語", "french": "フランス語", "german": "ドイツ語",
@@ -161,31 +179,90 @@ def describe_style(style):
         parts.append(text.strip())
     return " / ".join(parts)
 
-print("🎼 この設定で作られる曲（STYLE の日本語メモ）")
-print("   ", describe_style(STYLE))
-bpm = re.findall(r"(\d+)\s*bpm", STYLE, flags=re.I)
-if bpm:
-    print("   テンポ:", " / ".join(f"{b} BPM" for b in bpm))
-lines = [l for l in LYRICS.splitlines() if l.strip() and not l.strip().startswith("[")]
-sections = re.findall(r"\[([^\]]+)\]", LYRICS)
-print(f"🎤 歌詞: {len(lines)} 行 / セクション {sections if sections else '(タグなし)'}")
-if LYRICS.strip() == _DEFAULT_LYRICS.strip():
-    print("   日本語訳（既定の歌詞）:")
-    for line in _DEFAULT_LYRICS_JA.splitlines():
-        print("     " + line)
-else:
-    print("   （歌詞は編集済み。意味の訳はここには出ません）")
-print(f"⏱ 長さ {SECONDS:.0f} 秒 / 譜面 cot={COT} / 乱数シード {SEED} / 出力 {OUTDIR}")
-print("output directory:", OUTDIR)
-mark("1/8 設定", True, f"{OUTPUT_ID}: {SECONDS:.0f} 秒, cot={COT}")
+def show_song():
+    """いまの STYLE / LYRICS の内容を日本語で要約して表示します。"""
+    print("🎼 この設定で作られる曲（STYLE の日本語メモ）")
+    print("   ", describe_style(STYLE))
+    bpm = re.findall(r"(\d+)\s*bpm", STYLE, flags=re.I)
+    if bpm:
+        print("   テンポ:", " / ".join(f"{b} BPM" for b in bpm))
+    lines = [l for l in LYRICS.splitlines() if l.strip() and not l.strip().startswith("[")]
+    sections = re.findall(r"\[([^\]]+)\]", LYRICS)
+    print(f"🎤 歌詞: {len(lines)} 行 / セクション {sections if sections else '(タグなし)'}")
+    if LYRICS.strip() == _DEFAULT_LYRICS.strip():
+        print("   日本語訳（既定の歌詞）:")
+        for line in _DEFAULT_LYRICS_JA.splitlines():
+            print("     " + line)
+    else:
+        print("   （歌詞は編集済み。意味の訳はここには出ません）")
+    print("   ヒント: プリセットを試す → use_preset('citypop_ja') / 'ballad_ja' / 'lofi_en' / 'rock_en'")
 
-# 以下は変更不要です（保存場所の計算）
+def use_preset(name):
+    """プリセットを STYLE / LYRICS に読み込んで、内容を表示します。"""
+    global STYLE, LYRICS
+    if name not in PRESETS:
+        raise KeyError(f"プリセット名が違います: {sorted(PRESETS)}")
+    STYLE, LYRICS = PRESETS[name]["style"], PRESETS[name]["lyrics"]
+    print(f"▶ プリセット '{name}' を読み込みました")
+    show_song()
+
+show_song()
+mark("1/9 アイディア", True, f"{len([l for l in LYRICS.splitlines() if l.strip()])} 行の歌詞")
+'''
+
+SETTINGS_CELL = '''
+# ============ 2) 生成の設定（速さ・品質・出力先） ============
+from pathlib import Path
+import hashlib
+
+COT = "full"            # full: メロディ+コード譜を自動生成 / melody: メロディのみ / off: 譜面なし
+SECONDS = 120.0         # 生成する長さ（秒）。まずは 60〜120 がおすすめ（長いほど時間がかかります）
+SEED = 831001           # 乱数シード。同じ設定＋同じシードで「同じ狙い」の曲になります
+ODE_STEPS = 32          # 公式デフォルト。8〜16 にすると速いが品質はトレードオフ
+PLAN_MAX_TOKENS = None  # ABC 譜の上限（公式 4096）。512〜1024 にすると試作が速くなります
+ABC = None              # 手持ちの ABC 譜を使う場合は文字列で（例: open("score.abc").read()）
+
+OUTPUT_ID = "auto"      # "auto": 設定内容から自動採番（設定を変えると別フォルダ＝前回の結果を混ぜない）
+                        # 名前を付けたいときは "song-01" のように文字列で指定
+BUDGET_MINUTES = 600    # この実行で使う時間の上限（12h セッションなら 660 くらいまで可）
+SAFETY_MINUTES = 10     # セッション破棄に備えて残す余裕
+
+RUN_BENCHMARK = True    # 実モデルで実測ベンチを取る（1〜2分）。ETA を出してから本番へ
+FORCE_RUN = False       # ETA が予算を超えていても強行する
+
+INSTALL_MODE = "image"  # "image"(既定): 同梱の numpy/torch を保つ（安全・推奨）
+                        # "pinned": 公式ピン留め。numpy 2.2.6 を入れるため scipy/scikit-learn と
+                        #           衝突しうる（壊れたら Restart session して "image" に戻す）
+PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/working に置く（後で Dataset 化しやすい）
+REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"  # 自分の fork に差し替えてもOK
+REPO_REF = "main"       # fork の branch 名（例: "arena/01a0f78a-yue"）
+
+# --- アイディアをたくさん試すときの「速いモード」（品質より回転数） ---
+QUICK_PREVIEW = False   # True にすると 60秒 / 8ステップ / 譜面512トークン で走ります
+if QUICK_PREVIEW:
+    SECONDS, ODE_STEPS, PLAN_MAX_TOKENS = 60.0, 8, 512
+    print("QUICK_PREVIEW=True: 60秒 / ODE_STEPS=8 / PLAN_MAX_TOKENS=512（確認用・品質は低め）")
+
+# =================== ここから下は計算用（編集しなくてOK） ===================
+WORKDIR = Path("/kaggle/working") if Path("/kaggle").exists() else Path.cwd()
+REPO_DIR = WORKDIR / "YuE"
 if PERSIST_MODEL:
-    print("HF キャッシュ:", os.environ["HF_HOME"])
+    import os
+    os.environ["HF_HOME"] = str(WORKDIR / "hf-cache")
+
+if OUTPUT_ID in (None, "auto"):
+    _key = "|".join([STYLE, LYRICS, COT, str(SECONDS), str(SEED), str(ODE_STEPS),
+                     str(PLAN_MAX_TOKENS), str(ABC)])
+    OUTPUT_ID = "song-" + hashlib.sha256(_key.encode("utf-8")).hexdigest()[:8]
+    print(f"OUTPUT_ID を自動採番: {OUTPUT_ID}（設定を変えると別フォルダになります）")
+OUTDIR = WORKDIR / "outputs" / OUTPUT_ID
+
+frames = int(-(-SECONDS // 0.04))          # 1 latent frame = 1920/48000 秒 = 40ms
+print(f"長さ {SECONDS:.0f} 秒 = 約 {frames} フレーム / 譜面 cot={COT} / 出力先 {OUTDIR}")
+print(f"速度設定: ODE_STEPS={ODE_STEPS}" + (f", 譜面上限={PLAN_MAX_TOKENS}" if PLAN_MAX_TOKENS else ""))
 if not (REPO_DIR / "pyproject.toml").is_file():
-    print("リポジトリ未取得: セル3で git clone します")
-else:
-    print("リポジトリ:", REPO_DIR)
+    print("リポジトリ未取得: 次のセルで git clone します")
+mark("2/9 設定", True, f"{OUTPUT_ID}: {SECONDS:.0f} 秒, ODE_STEPS={ODE_STEPS}")
 '''
 
 GPU_CELL = '''
@@ -216,7 +293,7 @@ if is_p100:
     print()
     print(">>> P100 は BF16 非対応で YuE2 は動きません。Settings で Accelerator を GPU T4 x2 に変更し、")
     print(">>> Run -> Restart session してから、もう一度このセルを実行してください。")
-mark("2/8 GPU・インターネット", bool(names) and INTERNET and not is_p100,
+mark("3/9 GPU・インターネット", bool(names) and INTERNET and not is_p100,
      f"{names[0] if names else 'GPU なし'} / Internet {'OK' if INTERNET else 'NG'}")
 '''
 
@@ -271,7 +348,7 @@ try:
         elif not str(torch_version).startswith("2.10"):
             print(f"note: image torch is {torch_version}; 上流のピンは 2.10.0 です（そのまま使います）")
 except subprocess.CalledProcessError as exc:
-    mark("3/8 インストール", False, "git / pip が失敗しました")
+    mark("4/9 インストール", False, "git / pip が失敗しました")
     print("コマンドが失敗しました:", exc.cmd)
     print()
     print("確認すること:")
@@ -301,14 +378,14 @@ if broken:
     print()
     print(">>> Python 環境が不整合です（典型: numpy を差し替えて scipy / scikit-learn が壊れた）。")
     print(">>> 対処: Run -> Restart session してから、INSTALL_MODE='image' で上から実行し直します。")
-    mark("3/8 インストール", False, "Python 環境が不整合（numpy 差し替えの影響）")
+    mark("4/9 インストール", False, "Python 環境が不整合（numpy 差し替えの影響）")
     raise RuntimeError("inconsistent environment: " + " | ".join(broken))
 
 import torch
 print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
 if not torch.cuda.is_available():
     print(">>> GPU が見えていません。Settings -> Accelerator を GPU T4 x2 にして Restart session してください。")
-mark("3/8 インストール", torch.cuda.is_available(), f"torch {torch.__version__}")
+mark("4/9 インストール", torch.cuda.is_available(), f"torch {torch.__version__}")
 '''
 
 
@@ -325,14 +402,14 @@ importlib.reload(yk)
 written = Path("/kaggle/working/yue2_kaggle.py")
 print("driver:", yk.__file__)
 print("build :", yk.DRIVER_BUILD)
-mark("4/8 ドライバ", written.is_file() and str(yk.__file__) == str(written), f"build {yk.DRIVER_BUILD}")
+mark("5/9 ドライバ", written.is_file() and str(yk.__file__) == str(written), f"build {yk.DRIVER_BUILD}")
 '''
 
 PREFLIGHT_CELL = '''
 # --- プリフライト: GPU・VRAM・ディスク・BF16・import 整合性・ネット接続 ---
 report = yk.environment()
 READY = yk.print_report(report)["ok"]
-mark("5/8 プリフライト", READY, "実行可能" if READY else "上の ❌ の指示に従ってください")
+mark("6/9 プリフライト", READY, "実行可能" if READY else "上の ❌ の指示に従ってください")
 if READY:
     settings = yk.pipeline_settings(report)
     print("recommended:", {k: round(v, 2) if isinstance(v, float) else v
@@ -365,7 +442,7 @@ print("曲の長さ:", opts.frames, "frames =", f"{opts.seconds:.0f}s",
 print("モデル:", model_ref)
 print("VAE   :", vae_ref)
 print("既存の出力:", sorted(p.name for p in OUTDIR.iterdir()) if OUTDIR.exists() else "(なし=新規)")
-mark("6/8 実行オプション", True, f"{opts.frames} frames / cot={COT}")
+mark("準備: 実行オプション", True, f"{opts.frames} frames / cot={COT}")
 '''
 
 DIAGNOSTIC_CELL = '''
@@ -406,7 +483,7 @@ gpu_mem("after model load")
 del model
 gc.collect(); torch.cuda.empty_cache()
 gpu_mem("after free")
-mark("診断", True, f"モデル {size:.1f} GiB / 残骸 {before:.1f} GiB")
+mark("7/9 診断", True, f"モデル {size:.1f} GiB / 残骸 {before:.1f} GiB")
 '''
 
 RUN_CELL = '''
@@ -456,12 +533,12 @@ except Exception as exc:
 else:
     status = outcome.get("status")
     if status in ("complete", "already-complete"):
-        mark("7/8 生成", True, f"{outcome.get('outdir')}"
+        mark("8/9 生成", True, f"{outcome.get('outdir')}"
                                + ("（前回の続きが完了済みでした）" if status != "complete" else ""))
     elif status == "interrupted":
-        mark("7/8 生成", False, "時間切れで安全に停止しました。そのまま再実行で続きから再開します")
+        mark("8/9 生成", False, "時間切れで安全に停止しました。そのまま再実行で続きから再開します")
     else:
-        mark("7/8 生成", False, f"{status}: {outcome.get('reason', '')}")
+        mark("8/9 生成", False, f"{status}: {outcome.get('reason', '')}")
 '''
 
 RESULT_CELL = '''
@@ -483,13 +560,29 @@ if audio_path.is_file():
     if run_state.is_file():
         print(json.dumps(json.loads(run_state.read_text(encoding="utf-8")).get("stages", {}),
                          indent=1, ensure_ascii=False))
-    mark("8/8 結果", True, f"{result['audio_seconds']:.0f} 秒の音声")
+    mark("9/9 結果", True, f"{result['audio_seconds']:.0f} 秒の音声")
 else:
     print("まだ音声がありません。セル7を実行してください（再実行で続きから再開します）。")
-    mark("8/8 結果", False, "audio.flac がまだありません")
+    mark("9/9 結果", False, "audio.flac がまだありません")
 '''
 
 TIPS = """
+## アイディアを効率よく試す
+
+| やりたいこと | 操作 |
+|---|---|
+| とりあえず別ジャンルを聴く | セル1で `use_preset("citypop_ja")`（`ballad_ja` / `lofi_en` / `rock_en` も） |
+| 自分の歌詞で試す | セル1の `STYLE` と `LYRICS` を書き換えるだけ（他のセルは触らない） |
+| 日本語で歌わせる | `STYLE` の先頭を `"Japanese"` にして、`LYRICS` に日本語をそのまま |
+| 短時間でたくさん聴き比べる | セル2の `QUICK_PREVIEW = True`（60秒 / `ODE_STEPS=8` / 譜面 512 トークン） |
+| 当たりを引いたら本番 | `QUICK_PREVIEW = False` に戻して再実行（`OUTPUT_ID` は自動で別フォルダになります） |
+| 同じ曲の長い版が欲しい | セル1〜2の歌詞・STYLE・`SEED` はそのまま、`SECONDS` だけ伸ばす |
+
+- **`OUTPUT_ID` は既定で「設定内容のハッシュ」から自動採番**されます。設定を変えると別フォルダになるので、
+  前回の途中結果と混ざりません（同じ設定で再実行したときだけ、続きから再開します）。
+- フォルダ名を自分で決めたい場合は `OUTPUT_ID = "song-01"` のように文字列を入れてください。
+- `SEED` を変えると別テイクになります。T4 では同じシードでも完全な再現は保証されません（GPU/ドライバ差）。
+
 ## ✅ / ❌ の見方
 
 各セルの最後に 1 行の判定が出ます。**1〜6 がすべて ✅ なら、生成を始めて大丈夫**です。
@@ -566,24 +659,27 @@ def build() -> dict:
     driver = DRIVER.read_text(encoding="utf-8")
     cells = [
         md(HEADER),
-        md("## 1. 設定"),
-        code(CONFIG_CELL),
-        md("## 2. GPU の確認（インストール前）"),
+        md("## 1. 曲のアイディア（STYLE と歌詞）\n\nここを書き換えるだけで別の曲を試せます。"
+           "プリセットも使えます: `use_preset(\"citypop_ja\")`。"),
+        code(IDEA_CELL),
+        md("## 2. 生成の設定（長さ・品質・出力先）"),
+        code(SETTINGS_CELL),
+        md("## 3. GPU の確認（インストール前）"),
         code(GPU_CELL),
-        md("## 3. 依存のインストール"),
+        md("## 4. 依存のインストール"),
         code(INSTALL_CELL),
-        md("## 4. 実行ドライバの書き出し"),
+        md("## 5. 実行ドライバの書き出し"),
         code(DRIVER_CELL_PREFIX + driver),
         code(IMPORT_CELL),
-        md("## 5. プリフライト"),
+        md("## 6. プリフライト"),
         code(PREFLIGHT_CELL),
-        md("## 6. 実行オプション"),
+        md("## 7. 実行オプション（自動）"),
         code(OPTIONS_CELL),
-        md("### 任意: うまく動かないときの診断"),
+        md("## 8. うまく動かないときの診断（任意）"),
         code(DIAGNOSTIC_CELL),
-        md("## 7. 実測ベンチ → 生成（再開可能）"),
+        md("## 9. 実測ベンチ → 生成（再開可能）"),
         code(RUN_CELL),
-        md("## 8. 結果"),
+        md("## 10. 結果"),
         code(RESULT_CELL),
         md(TIPS),
     ]
@@ -605,7 +701,9 @@ def main() -> int:
     notebook = build()
     NOTEBOOK.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     # sanity: the embedded cell must reproduce the driver (modulo trailing newline)
-    embedded = "".join(notebook["cells"][8]["source"])[len(DRIVER_CELL_PREFIX):]
+    writer = next(cell for cell in notebook["cells"]
+                  if cell["cell_type"] == "code" and "".join(cell["source"]).startswith(DRIVER_CELL_PREFIX))
+    embedded = "".join(writer["source"])[len(DRIVER_CELL_PREFIX):]
     if embedded.rstrip("\n") != DRIVER.read_text(encoding="utf-8").rstrip("\n"):
         raise SystemExit("embedded driver differs from kaggle/yue2_kaggle.py")
     print(f"wrote {NOTEBOOK} ({NOTEBOOK.stat().st_size / 1024:.0f} KiB, "

@@ -331,6 +331,26 @@ def test_verdict_needs_network_or_a_local_model():
     assert online["ok"] is True and not online["warnings"]
 
 
+def _run_settings_cell(source, **overrides):
+    """Run cell 1 (idea) and then the given settings cell, as the notebook does."""
+    import contextlib
+    import io
+    import pathlib
+    import re
+
+    for key, value in overrides.items():
+        source, count = re.subn(rf"^{key} = .*$", f"{key} = {value!r}", source,
+                                count=1, flags=re.M)
+        assert count == 1, f"{key} not found in the settings cell"
+    idea = next(src for src in _notebook_cells() if "use_preset" in src and "STYLE = (" in src)
+    namespace = {"__name__": "config_cell", "Path": pathlib.Path}
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(compile(idea, "idea_cell", "exec"), namespace)
+        exec(compile(source, "settings_cell", "exec"), namespace)
+    return namespace, output.getvalue()
+
+
 def _notebook_cells(kind="code"):
     import json
     notebook = json.loads((Path(__file__).parent / "YuE2_Kaggle.ipynb").read_text(encoding="utf-8"))
@@ -348,19 +368,22 @@ def test_notebook_cells_are_valid_python():
     assert checked >= 6
 
 
-def test_notebook_config_cell_shows_a_japanese_memo():
+def _run_config_cells(**overrides):
+    settings = next(src for src in _notebook_cells() if "OUTPUT_ID" in src and "QUICK_PREVIEW" in src)
+    return _run_settings_cell(settings, **overrides)
+
+
+def test_notebook_idea_cell_explains_style_and_lyrics():
     """Cell 1 must run before anything is installed and explain STYLE/LYRICS."""
     import contextlib
     import io
 
-    source = next(src for src in _notebook_cells() if "STYLE = (" in src)
-    namespace = {"__name__": "config_cell"}
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        exec(compile(source, "config_cell", "exec"), namespace)
-    text = output.getvalue()
-    assert "✅ [1/8 設定] OK" in text, text
+    namespace, text = _run_config_cells()
+    assert "✅ [1/9 アイディア] OK" in text, text
+    assert "🎼" in text and "🎤" in text
     assert "ネオンが路地に消えていく" in text            # default lyrics translation
+    assert "✅ [2/9 設定] OK" in text, text
+    assert "OUTPUT_ID を自動採番" in text                 # stable, automatic output folder
     with contextlib.redirect_stdout(io.StringIO()):
         assert namespace["mark"]("probe", False, "x") is False
 
@@ -371,6 +394,41 @@ def test_notebook_config_cell_shows_a_japanese_memo():
     # Japanese input passes through, and unknown English words are kept
     assert describe("Japanese, city pop, ドラム") == "日本語 / シティポップス / ドラム"
     assert "conductor" in describe("orchestral, conductor")
+
+
+def test_notebook_presets_and_quick_preview():
+    presets = ["citypop_ja", "ballad_ja", "lofi_en", "rock_en"]
+    namespace, _ = _run_config_cells()
+    assert set(namespace["PRESETS"]) == set(presets)
+    import contextlib
+    import io
+
+    for name in presets:
+        with contextlib.redirect_stdout(io.StringIO()):
+            namespace["use_preset"](name)
+        style, lyrics = namespace["PRESETS"][name]["style"], namespace["PRESETS"][name]["lyrics"]
+        assert namespace["STYLE"] == style and namespace["LYRICS"] == lyrics
+        assert "[Verse]" in lyrics and "[Chorus]" in lyrics
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            namespace["use_preset"]("nope")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown preset must raise")
+
+    # the same settings must map to the same output folder, different ones must not
+    def output_id(**overrides):
+        return _run_config_cells(**overrides)[0]["OUTPUT_ID"]
+
+    assert output_id() == output_id()
+    assert output_id(ODE_STEPS=8) != output_id(ODE_STEPS=32)
+
+    quick = next(src for src in _notebook_cells() if "QUICK_PREVIEW" in src)
+    quick_source = quick.replace("QUICK_PREVIEW = False", "QUICK_PREVIEW = True")
+    fast, text = _run_settings_cell(quick_source)
+    assert (fast["SECONDS"], fast["ODE_STEPS"], fast["PLAN_MAX_TOKENS"]) == (60.0, 8, 512)
+    assert "QUICK_PREVIEW=True" in text
 
 
 def test_notebook_embeds_the_driver_verbatim():
