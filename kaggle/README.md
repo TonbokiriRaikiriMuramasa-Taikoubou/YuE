@@ -22,6 +22,7 @@
 
 | ファイル | 役割 |
 |---|---|
+| **[`STEPS_ja.md`](STEPS_ja.md)** | **Kaggle を開くところからの手順書（最初はこれ）** |
 | `YuE2_Kaggle.ipynb` | Kaggle に取り込むノートブック。設定 → GPU 確認 → インストール → プリフライト → 実測ベンチ → 生成 → 試聴 |
 | `yue2_kaggle.py` | ノートに埋め込まれるドライバ。CLI として単体でも使えます |
 | `build_notebook.py` | `yue2_kaggle.py` をノートブックへ埋め込むビルダー（ドライバを編集したら `python kaggle/build_notebook.py`） |
