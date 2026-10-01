@@ -62,7 +62,7 @@ Jupyter の操作は **Shift + Enter** で 1 セル実行して次へ進みま�
 |---|---|---|---|
 | 1 | 設定 | 歌詞・スタイルを書き換える（下の「初回おすすめ設定」参照） | 1 分 |
 | 2 | GPU の確認 | 何もせず実行。`Tesla T4` と出れば OK。**P100 が出たら §2 に戻って T4 x2 に変更し、カーネルを再起動** | 5 秒 |
-| 3 | 依存のインストール | 何もせず実行（git clone + pip install） | **3〜8 分** |
+| 3 | 依存のインストール | 何もせず実行（git clone + pip install + 整合性チェック） | **3〜8 分** |
 | 4 | ドライバの書き出し | 何もせず実行（`%%writefile`） | 1 秒 |
 | 5 | import | 何もせず実行。`driver: /kaggle/working/yue2_kaggle.py` と出れば OK | 1 秒 |
 | 6 | プリフライト | 何もせず実行。`-> unquantized pipeline can run here` が出れば合格 | 2 秒 |
@@ -89,6 +89,10 @@ COT = "full"            # メロディ+コード譜
 ODE_STEPS = 32          # 公式デフォルト（品質優先）
 PLAN_MAX_TOKENS = None  # 公式上限 4096
 ```
+
+> **インストール方法（`INSTALL_MODE`）**: 既定の `"image"` は Kaggle 同梱の numpy / torch を保ったまま
+> yue2 本体と依存だけを入れる安全な経路です。`"pinned"` は上流の完全ピン留め（`numpy==2.2.6`）ですが、
+> numpy を下げるためイメージ同梱の scipy / scikit-learn と衝突しえます（→ §6 の早見表を参照）。
 
 > `ODE_STEPS` と `PLAN_MAX_TOKENS` を下げるのは**品質を変える**操作です。
 > 出来上がりを評価するときは 32 / None に戻し、同じ条件どうしで比べてください。
@@ -133,6 +137,7 @@ from IPython.display import FileLink; FileLink(f"{OUTDIR}/audio.mp3")
 |---|---|
 | Accelerator に GPU の選択肢が無い | 電話番号認証が未完了（§0-2） |
 | `Could not resolve host: github.com` / `pip` が落ちる / モデルが落ちてこない | **Settings の Internet が Off**。Import したノートは既定で Off です。**On** に変更 → 直らない場合は **Run → Restart session** → 上から実行。セル2の接続チェックで OK を確認できます |
+| `ImportError: cannot import name '_center' from 'numpy._core.umath'` （または `numpy` / `scipy` / `sklearn` の ImportError） | pip が **numpy を差し替えた**ため、イメージ同梱の scipy / scikit-learn と不整合になった。**Run → Restart session** して、`INSTALL_MODE="image"`（現在の既定）で上から実行し直す。セル3末尾の整合性チェックが同じ判定をしてくれます |
 | 起動時に BF16 エラー | **P100 を引いた**。Settings で T4 x2 に変更 → カーネル再起動 |
 | 途中で止まった（20 分放置） | 対話実行の制限。**Commit 実行**に切り替える |
 | 同じ設定で再実行したら一瞬で終わった | 前回の続きから再開した正常動作。`already-complete` と出ます |

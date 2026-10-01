@@ -106,8 +106,11 @@ NAR は元のチャンク単位でファイルに保存するため、長い曲�
   から自動検出して再利用できます。
 - vLLM バックエンド（`--backend vllm`）は AR 段の高速化が期待できますが、Kaggle のイメージに
   `vllm==0.19.0` を入れる必要があり、Turing では非対応・低速な場合があります。既定では使いません。
-- 上流の `yue2` は `torch==2.10.0` 等をピン留めしています。ノートでは既定で完全ピン install、
-  `INSTALL_MODE="fast"` なら Kaggle 同梱の torch を使って軽く済ませます（非公式パス）。
+- インストールはセル1の `INSTALL_MODE` で選びます。既定の **`"image"`** は Kaggle 同梱の
+  **numpy / torch をそのまま維持**し、yue2 本体（`--no-deps`）と依存（`transformers==4.57.6` 等）だけを
+  入れます。**`"pinned"`** は上流の完全ピン留め（`numpy==2.2.6`）ですが、numpy を下げるため
+  **イメージ同梱の scipy / scikit-learn と不整合になりえます**（症状: `ImportError: cannot import name
+  '_center' from 'numpy._core.umath'`）。壊れたら Restart session して `"image"` に戻してください。
 
 ## 検証状況
 

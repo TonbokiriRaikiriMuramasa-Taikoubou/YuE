@@ -177,6 +177,31 @@ def _matmul_probe(torch, device, size=2048, repeats=3) -> dict:
     return rates
 
 
+def _import_probe() -> dict:
+    """Import the packages yue2 pulls in, so a broken numpy/scipy mixture is
+    reported at preflight instead of as a mid-generation ImportError.
+
+    Installing the pinned recipe can downgrade numpy under an image-provided
+    scipy/scikit-learn; the symptom is
+    ``ImportError: cannot import name '_center' from 'numpy._core.umath'``.
+    """
+    import importlib
+
+    results: dict = {}
+    for name in ("numpy", "scipy", "sklearn", "transformers", "torch", "soundfile", "tiktoken"):
+        try:
+            module = importlib.import_module(name)
+            results[name] = str(getattr(module, "__version__", "unknown"))
+        except Exception as exc:
+            results[name] = f"FAILED: {type(exc).__name__}: {exc}"
+    try:
+        from transformers import GenerationMixin       # noqa: F401 - the chain yue2 uses
+        results["transformers.GenerationMixin"] = "OK"
+    except Exception as exc:
+        results["transformers.GenerationMixin"] = f"FAILED: {type(exc).__name__}: {exc}"
+    return results
+
+
 def environment(probe: bool = True) -> dict:
     """Collect everything needed to decide whether and how a run can proceed."""
     import torch
@@ -221,6 +246,7 @@ def environment(probe: bool = True) -> dict:
                       "root (/)": _disk(Path("/"))}
     report["local_model_dir"], report["local_vae_dir"] = find_local_models()
     report["internet"] = {"huggingface.co": _reachable("huggingface.co")}
+    report["runtime_imports"] = _import_probe()
     return report
 
 
@@ -237,6 +263,15 @@ def verdict(report: dict) -> dict:
     major, minor = device["compute_capability"]
     checks.append(f"{device['name']} (cc {major}.{minor}, {device['memory_gib']:.1f} GiB, "
                   f"{device['free_gib']:.1f} GiB free), torch {report['torch']}")
+    failed = {name: value for name, value in (report.get("runtime_imports") or {}).items()
+              if isinstance(value, str) and value.startswith("FAILED")}
+    if failed:
+        checks.append("FAIL: the Python environment is inconsistent: "
+                      + "; ".join(f"{name} -> {value}" for name, value in failed.items()))
+        checks.append("Fix: Run -> Restart session, then re-run the install cell with "
+                      "INSTALL_MODE='image' (never let pip downgrade numpy: the image's scipy and "
+                      "scikit-learn are built against it).")
+        return {"ok": False, "checks": checks, "warnings": warnings}
     if report.get("bf16_supported") is False:
         checks.append("FAIL: yue2's unquantized preset refuses this GPU because "
                       "torch.cuda.is_bf16_supported() is False. cc 6.0 (P100) is the usual "
@@ -301,6 +336,10 @@ def print_report(report: dict) -> dict:
         lines.append(f"  local model (dataset) : {report['local_model_dir']}")
     if report.get("local_vae_dir"):
         lines.append(f"  local VAE (dataset)   : {report['local_vae_dir']}")
+    runtime = report.get("runtime_imports") or {}
+    if runtime:
+        summary = ", ".join(f"{name} {value}" for name, value in runtime.items())
+        lines.append(f"  runtime: {summary}")
     internet = report.get("internet")
     if internet:
         state = "OK" if internet.get("huggingface.co") else "NG (Settings -> Internet を On に)"

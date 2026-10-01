@@ -88,7 +88,9 @@ SAFETY_MINUTES = 10     # セッション破棄に備えて残す余裕
 RUN_BENCHMARK = True    # 実モデルで実測ベンチを取る（1〜2分）。ETA を出してから本番へ
 FORCE_RUN = False       # ETA が予算を超えていても強行する
 
-INSTALL_MODE = "pinned" # "pinned": 公式ピン留め依存を入れる / "fast": Kaggle 同梱 torch を使う
+INSTALL_MODE = "image"  # "image"(既定): 同梱の numpy/torch を保つ（安全・推奨）
+                        # "pinned": 公式ピン留め。numpy 2.2.6 を入れるため scipy/scikit-learn と
+                        #           衝突しうる（壊れたら Restart session して "image" に戻す）
 PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/working に置く（後で Dataset 化しやすい）
 REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"  # 自分の fork に差し替えてもOK
 REPO_REF = "main"       # fork の branch 名（例: "arena/01a0f78a-yue"）
@@ -134,10 +136,26 @@ else:
 
 INSTALL_CELL = '''
 # --- リポジトリの取得と依存のインストール（初回 3〜8 分程度） ---
-import subprocess, sys, os
+import subprocess, sys, os, importlib, importlib.metadata as md
 
 def pip(*args):
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", *args], check=True)
+
+def version(name):
+    try:
+        return md.version(name)
+    except md.PackageNotFoundError:
+        return None
+
+def major_minor(text):
+    try:
+        parts = str(text).split("+")[0].split(".")
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        return (0, 0)
+
+print("image before:", {n: version(n) for n in
+                        ("torch", "numpy", "scipy", "scikit-learn", "transformers")})
 
 try:
     if not (REPO_DIR / "pyproject.toml").is_file():
@@ -147,14 +165,24 @@ try:
             REPO_DIR.rmdir()          # 失敗した clone の空ディレクトリが残っていたら片付ける
         subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_REF, REPO_URL, str(REPO_DIR)],
                        check=True)
+
     if INSTALL_MODE == "pinned":
-        # 公式にピン留めされた torch==2.10.0 / transformers==4.57.6 等を入れる（再現重視）
+        # 公式レシピそのまま。ただし numpy==2.2.6 を入れるため、イメージ同梱の scipy /
+        # scikit-learn と不整合になることがあります（numpy._core.umath の ImportError）。
+        print("WARNING: pinned モードは numpy を差し替えます。壊れたら Restart session して")
+        print("         INSTALL_MODE='image'（既定）でやり直してください。")
         pip(str(REPO_DIR))
     else:
-        # Kaggle 同梱の CUDA 対応 torch をそのまま使い、軽い依存だけ入れる（速いが非公式）
+        # 既定: イメージ同梱の numpy / torch は触らない（numpy を下げると scipy/sklearn が壊れる）
         pip("--no-deps", str(REPO_DIR))
         pip("transformers==4.57.6", "huggingface-hub==0.36.2", "safetensors==0.7.0",
             "tiktoken==0.12.0", "soundfile==0.13.1", "accelerate==1.13.0")
+        torch_version = version("torch")
+        if major_minor(torch_version or "0") < (2, 10):
+            print(f"image torch={torch_version}: 上流は torch 2.10 前提なので入れ替えます")
+            pip("torch==2.10.0")
+        elif not str(torch_version).startswith("2.10"):
+            print(f"note: image torch is {torch_version}; 上流のピンは 2.10.0 です（そのまま使います）")
 except subprocess.CalledProcessError as exc:
     print("コマンドが失敗しました:", exc.cmd)
     print()
@@ -164,11 +192,33 @@ except subprocess.CalledProcessError as exc:
     print("  3) 一時的なネットワーク障害なら、1分ほど待ってこのセルを再実行")
     print("  4) /kaggle/working の空き容量（保存できるのは 20GB まで）")
     raise
-else:
-    import torch
-    print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
-    if not torch.cuda.is_available():
-        print(">>> GPU が見えていません。Settings -> Accelerator を GPU T4 x2 にして Restart session してください。")
+
+# --- 整合性チェック（numpy を差し替えて scipy/sklearn が壊れていないか） ---
+broken = []
+for name in ("numpy", "scipy", "sklearn", "transformers", "torch", "soundfile", "tiktoken"):
+    try:
+        module = importlib.import_module(name)
+        print(f"  OK  {name} {getattr(module, '__version__', '')}")
+    except Exception as exc:
+        broken.append(f"{name}: {type(exc).__name__}: {exc}")
+        print(f"  NG  {name}: {type(exc).__name__}: {exc}")
+try:
+    from transformers import GenerationMixin  # noqa: F401  ← yue2 が実際に通る import 経路
+    print("  OK  transformers.GenerationMixin（yue2 が必要とする import 経路）")
+except Exception as exc:
+    broken.append(f"transformers.generation: {type(exc).__name__}: {exc}")
+    print(f"  NG  transformers.GenerationMixin: {type(exc).__name__}: {exc}")
+
+if broken:
+    print()
+    print(">>> Python 環境が不整合です（典型: numpy を差し替えて scipy / scikit-learn が壊れた）。")
+    print(">>> 対処: Run -> Restart session してから、INSTALL_MODE='image' で上から実行し直します。")
+    raise RuntimeError("inconsistent environment: " + " | ".join(broken))
+
+import torch
+print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
+if not torch.cuda.is_available():
+    print(">>> GPU が見えていません。Settings -> Accelerator を GPU T4 x2 にして Restart session してください。")
 '''
 
 
@@ -304,6 +354,8 @@ Kaggle Dataset（Private）にすれば次回 `/kaggle/input` から自動検出
 **うまくいかないとき。**
 - `FlashAttention only supports Ampere GPUs` などが出たら、このノートは自動で `torch-eager` に切り替えます
   （CUDA graph / flash を使わない経路。遅いが T4 でも動きます）。
+- `ImportError: cannot import name '_center' from 'numpy._core.umath'` → numpy を差し替えた影響です。
+  Run → Restart session して `INSTALL_MODE="image"`（既定）で上から実行し直してください。
 - GPU が P100 だった → Settings で `GPU T4 x2` に変更。
 - CUDA OOM → `SECONDS` を下げる、`ODE_STEPS` を下げる、ノートを再起動。
 - 生成が途中で止まった → 出力ディレクトリを確認し、そのまま再実行（続きから再開）。

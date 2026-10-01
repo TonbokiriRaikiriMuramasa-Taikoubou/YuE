@@ -135,6 +135,35 @@ def test_verdict_shapes():
     assert t4["ok"] is True and any("emulated" in line for line in t4["warnings"])
 
 
+def test_import_probe_shape():
+    probe = yk._import_probe()
+    for name in ("numpy", "scipy", "sklearn", "transformers", "torch",
+                 "transformers.GenerationMixin"):
+        assert name in probe, name
+    assert all(isinstance(value, str) for value in probe.values())
+
+
+def test_verdict_rejects_an_inconsistent_python_environment():
+    base = {"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
+            "bf16_supported": True, "bf16_native": True, "ram_gib": 16,
+            "devices": [{"name": "Tesla T4", "memory_gib": 15.9, "free_gib": 15.9,
+                         "compute_capability": [7, 5]}],
+            "disk": {"working (/kaggle/working)": {"free_gib": 40, "path": "x"}},
+            "internet": {"huggingface.co": True}}
+    broken = yk.verdict({**base, "runtime_imports": {
+        "numpy": "2.2.6",
+        "scipy": "FAILED: ImportError: cannot import name '_center' from 'numpy._core.umath'",
+        "transformers.GenerationMixin": "FAILED: ImportError: ..."}})
+    assert broken["ok"] is False
+    assert any("inconsistent" in line for line in broken["checks"])
+    assert any("INSTALL_MODE='image'" in line for line in broken["checks"])
+    healthy = yk.verdict({**base, "runtime_imports": {"numpy": "2.3.1", "scipy": "1.17.0",
+                                                      "transformers.GenerationMixin": "OK"}})
+    assert healthy["ok"] is True
+    # an empty probe (older callers) must not block anything
+    assert yk.verdict(dict(base))["ok"] is True
+
+
 def test_verdict_needs_network_or_a_local_model():
     base = {"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
             "bf16_supported": True, "bf16_native": True, "ram_gib": 16,
