@@ -153,12 +153,35 @@ from IPython.display import FileLink; FileLink(f"{OUTDIR}/audio.mp3")
 | `❌ [7/8 生成] NG` が出た | その下に原因候補と対処が日本語で出ます。分からなければ **出力の最後の20行**をコピーして相談 |
 | カーネルが古いままかも？ | セル4が出す `build` の値を確認。ノートを取り込み直したのに値が古いときは、ドライバのセル（`%%writefile`）を再実行 |
 | GPU クォータが足りない | 右のアカウント表示で残り時間を確認（週 30 時間） |
-| CUDA out of memory | `SECONDS` を下げる → `ODE_STEPS` を下げる → ノートを再起動 |
+| CUDA out of memory | **順番が大事**（下の「OOM が出たら」を参照）。まず **Run → Restart session** |
 | `FlashAttention ...` のエラー | 自動で `torch-eager` に切り替わります（ログに 1 行出る）。遅いが動きます |
 | 出力が残らない / 保存に失敗 | `/kaggle/working` は 20 GB まで。`PERSIST_MODEL=False`、古い出力を削除 |
 | ETA が予算を超えて生成されない | `SECONDS` を下げるか、`FORCE_RUN=True` で強行 |
 
 ---
+
+## 6.5 OOM（GPU メモリ不足）が出たら
+
+**いちばん多い原因は「前回失敗した実行のメモリが残っている」ことです。**
+Jupyter は最後のトレースバック（エラーの中身）を保持し続けるため、失敗した実行が掴んでいた
+モデルのテンソルが GPU に残ったままになります。そのまま再実行すると、同じ場所で必ず落ちます。
+
+1. **Run → Restart session**（最優先。これをせず再実行しても直りません）
+2. セル1で `SECONDS` を短くする（例: 60〜120）。必要なら `ODE_STEPS` も下げる
+3. 「診断」セルを実行して、数字を確認する
+
+```
+GPU メモリ:
+  before             allocated= 0.00 GiB reserved= 0.00 GiB free=14.6/14.6 GiB   ← まっさら
+パラメータ: 6.76 GiB, dtype: torch.bfloat16                                      ← 正常（bf16）
+  after model load   allocated= 6.78 GiB ...
+✅ [診断] OK — モデル 6.8 GiB / 残骸 0.0 GiB
+```
+
+- `before` が **1 GiB 以上**なら残骸あり → Restart session
+- パラメータが **13.5 GiB 前後**（fp32）なら環境異常 → セル5の `runtime:` 行と一緒に相談
+- 長時間の本番は **Save & Run All (Commit)** がおすすめです。毎回まっさらなカーネルで走るので
+  この残骸問題が起きません
 
 ## 7. ETA（所要時間の見積もり）の読み方
 

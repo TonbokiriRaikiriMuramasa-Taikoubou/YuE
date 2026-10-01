@@ -154,6 +154,44 @@ def _reachable(host: str, timeout: float = 4.0) -> bool:
         return False
 
 
+def gpu_memory(device=None) -> dict:
+    """Allocator state in GiB; used to tell 'fresh kernel' from 'leftovers'."""
+    try:
+        import torch
+    except ImportError as exc:                       # torch-less CPU environment
+        return {"cuda": False, "torch": False, "error": str(exc)}
+
+    if not torch.cuda.is_available():
+        return {"cuda": False, "torch": True}
+    index = 0
+    if device is not None:
+        index = torch.device(device).index or 0
+    free, total = torch.cuda.mem_get_info(index)
+    return {"cuda": True, "index": index,
+            "allocated_gib": torch.cuda.memory_allocated(index) / 2**30,
+            "reserved_gib": torch.cuda.memory_reserved(index) / 2**30,
+            "free_gib": free / 2**30, "total_gib": total / 2**30}
+
+
+def release_gpu_memory() -> dict:
+    """Drop Python references and hand cached blocks back to the driver.
+
+    Jupyter keeps the last traceback, whose frames still reference the modules
+    and tensors of a failed run; without an explicit collect that GPU memory
+    looks 'in use' to the next attempt and turns into a confusing OOM.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:                                # pragma: no cover - best effort
+        pass
+    return gpu_memory()
+
+
 def _matmul_probe(torch, device, size=2048, repeats=3) -> dict:
     """Effective BF16/FP16/FP32 GEMM throughput; exposes emulated-BF16 penalties."""
     rates: dict = {}
@@ -309,7 +347,9 @@ def pipeline_settings(report: dict, *, ode_steps: int | None = None) -> dict:
     device = report.get("device") or report["devices"][0]
     vram = float(device["memory_gib"])
     settings = {
-        "memory_budget_gib": max(4.0, min(24.0, vram - 0.5)),
+        # YuE2Pipeline reserves 2 GiB internally and caps at (total - 2 GiB), so
+        # passing the full VRAM gives the largest usable fraction of this card.
+        "memory_budget_gib": max(4.0, min(24.0, vram)),
         "offload_ar": vram < 15.5,
         "vae_core_frames": 512 if vram < 20 else 1024,
         "quantization": "none",          # FP8 needs cc >= 8.9; never available on the free tier
@@ -482,6 +522,11 @@ class PipelineHandle:
                                    generation_config=self.generation_config)
         return True
 
+    def release_memory(self) -> dict:
+        """Free this handle's model and hand cached GPU blocks back to the driver."""
+        self.close()
+        return release_gpu_memory()
+
     def close(self):
         if getattr(self, "pipe", None) is not None:
             try:
@@ -489,6 +534,7 @@ class PipelineHandle:
             except Exception:                        # pragma: no cover - best effort
                 pass
         self.pipe = None
+        release_gpu_memory()
 
     def __enter__(self):
         return self
@@ -498,16 +544,32 @@ class PipelineHandle:
 
 
 def run_with_retry(handle: PipelineHandle, stage):
-    """Run ``stage(pipe)``; if this GPU refuses the graph path, rebuild and retry once."""
+    """Run ``stage(pipe)``; if this GPU refuses the graph path, rebuild and retry once.
+
+    Failures clear their traceback before propagating: Jupyter keeps the last
+    traceback alive, and its frames would otherwise pin the model tensors in GPU
+    memory across cells.
+    """
     try:
         return stage(handle.pipe)
     except (RuntimeError, NotImplementedError, ValueError) as exc:
         if not handle.retry_eager(exc):
-            raise
+            if "out of memory" in str(exc).lower():
+                release = getattr(handle, "release_memory", None)
+                if callable(release):
+                    release()
+            exc.__traceback__ = None            # drop frames (and their tensor refs)
+            raise exc.with_traceback(None) from None
         return stage(handle.pipe)
 
 
 def open_pipeline(report: dict, options: Options, *, log=print) -> PipelineHandle:
+    memory = gpu_memory()
+    if memory.get("allocated_gib", 0.0) > 1.0:
+        log(f"[kaggle] WARNING: the GPU already holds {memory['allocated_gib']:.1f} GiB of PyTorch "
+            "allocations. This is almost always the leftovers of an earlier attempt whose tensors "
+            "are still referenced by the Jupyter traceback. Run -> Restart session before a long "
+            "run, otherwise the model load can run out of memory.")
     handle = PipelineHandle(report, options)
     settings = pipeline_settings(report)
     log(f"[kaggle] pipeline ready: backend={handle.backend}, "
@@ -542,7 +604,8 @@ def measure(handle: PipelineHandle, *, ar_tokens: int = 16, frames: int = 128,
     from yue2.protocol import GenerationConfig
 
     options = handle.options
-    out: dict = {"frames_measured": frames, "ar_tokens": ar_tokens}
+    out: dict = {"frames_measured": frames, "ar_tokens": ar_tokens,
+                 "gpu_before": gpu_memory()}
 
     def plan_stage(pipe):                       # the measurement never uses the real ABC budget
         kwargs = dict(style=options.style, lyrics=options.lyrics, cot=options.cot,

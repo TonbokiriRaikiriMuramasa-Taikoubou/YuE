@@ -63,7 +63,9 @@ python kaggle/yue2_kaggle.py run \
 3. `offload_ar=True`（VRAM < 15.5 GiB のとき。flow matching 中に AR 側の重みを CPU へ退避）
 4. semantic 段の `max_tokens` を要求長に合わせて制限（KV キャッシュは `prefix + max_tokens` 分だけ確保されるため、
    9000 固定をやめると VRAM と無駄な生成を同時に削減）
-5. CUDA graph / flash attention が Turing で拒否された場合、`torch-eager` に**自動フォールバック**して続行
+5. GPU の残骸（前回失敗した実行が Jupyter のトレースバック経由で保持しているテンソル）を検出し、
+   例外時に参照を切って解放。`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` も既定で設定
+6. CUDA graph / flash attention が Turing で拒否された場合、`torch-eager` に**自動フォールバック**して続行
 
 ## 実行の仕組み（セッション切れに耐える）
 

@@ -57,7 +57,7 @@ def test_options_validation_and_budgets():
 
 def test_pipeline_settings_follow_vram():
     big = yk.pipeline_settings({"device": {"memory_gib": 23.6}})
-    assert big["memory_budget_gib"] == 23.1 and big["offload_ar"] is False
+    assert big["memory_budget_gib"] == 23.6 and big["offload_ar"] is False
     assert big["vae_core_frames"] == 1024 and big["quantization"] == "none"
     small = yk.pipeline_settings({"device": {"memory_gib": 11.0}})
     assert small["offload_ar"] is True and small["vae_core_frames"] == 512
@@ -133,6 +133,64 @@ def test_verdict_shapes():
                                   "compute_capability": [7, 5]}],
                      "disk": {"working (/kaggle/working)": {"free_gib": 40, "path": "x"}}})
     assert t4["ok"] is True and any("emulated" in line for line in t4["warnings"])
+
+
+def test_gpu_memory_helpers_degrade_without_cuda():
+    memory = yk.gpu_memory()
+    assert isinstance(memory, dict) and "cuda" in memory
+    released = yk.release_gpu_memory()
+    assert isinstance(released, dict) and "cuda" in released
+
+
+def _frames(exception):
+    import traceback
+
+    names = []
+    for entry in traceback.extract_tb(exception.__traceback__) if exception.__traceback__ else []:
+        names.append(entry.name)
+    return names
+
+
+def test_failed_stage_drops_its_traceback():
+    """Jupyter keeps the last traceback; its frames would pin GPU tensors."""
+
+    class Handle:
+        pipe = "pipe"
+
+        def retry_eager(self, exc):
+            return False
+
+        def release_memory(self):
+            self.released = True
+
+    handle = Handle()
+
+    def stage(pipe):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 722.00 MiB")
+
+    try:
+        yk.run_with_retry(handle, stage)
+    except RuntimeError as exc:
+        # the deep frames (module/param locals that pin GPU tensors) must be gone
+        names = _frames(exc)
+        assert "stage" not in names, names
+        assert len(names) <= 3, names
+        assert "out of memory" in str(exc)
+    else:
+        raise AssertionError("the OOM must propagate")
+    assert handle.released is True
+
+    # a non-OOM failure must not trigger a memory sweep, but still loses its frames
+    handle2 = Handle()
+
+    def stage2(pipe):
+        raise ValueError("bad request")
+
+    try:
+        yk.run_with_retry(handle2, stage2)
+    except ValueError as exc:
+        assert "stage2" not in _frames(exc), _frames(exc)
+    assert not hasattr(handle2, "released")
 
 
 def test_import_probe_shape():

@@ -67,6 +67,9 @@ CONFIG_CELL = '''
 import os, re, sys
 from pathlib import Path
 
+# GPU メモリの断片化対策。torch を import する前に設定する必要があります（このセルが最初なので OK）
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 _DEFAULT_LYRICS = """[Verse]
 Neon fades along the lane
 Footsteps keep the time of rain
@@ -365,6 +368,47 @@ print("既存の出力:", sorted(p.name for p in OUTDIR.iterdir()) if OUTDIR.exi
 mark("6/8 実行オプション", True, f"{opts.frames} frames / cot={COT}")
 '''
 
+DIAGNOSTIC_CELL = '''
+# --- 任意: GPU メモリ診断（OOM が出たとき、本番の前に実行すると原因が分かります） ---
+# ここでは生成は行いません。モデルを 1 回読んで、GPU メモリの実測値を出すだけです。
+import gc
+import torch
+
+def gpu_mem(tag):
+    free, total = torch.cuda.mem_get_info(0)
+    print(f"  {tag:<18} allocated={torch.cuda.memory_allocated(0)/2**30:5.2f} GiB"
+          f" reserved={torch.cuda.memory_reserved(0)/2**30:5.2f} GiB"
+          f" free={free/2**30:5.2f}/{total/2**30:5.2f} GiB")
+
+print("GPU メモリ:")
+gpu_mem("before")
+before = torch.cuda.memory_allocated(0) / 2**30
+gc.collect(); torch.cuda.empty_cache()
+gpu_mem("after gc")
+if before > 1.0:
+    print()
+    print(f">>> このカーネルは既に {before:.1f} GiB を保持しています。前回失敗した実行の残骸です。")
+    print(">>> Run -> Restart session してから実行し直すと解放されます（放置すると必ず OOM になります）。")
+
+model_dir, vae_dir = yk.resolve_models(opts, report)
+print("モデル:", model_dir)
+from yue2.modeling_yue2 import YuE2ForCausalLM
+try:
+    model = YuE2ForCausalLM.from_pretrained(model_dir, local_files_only=True,
+                                            dtype=torch.bfloat16, low_cpu_mem_usage=True).eval()
+except TypeError:                      # 旧 transformers は torch_dtype という名前
+    model = YuE2ForCausalLM.from_pretrained(model_dir, local_files_only=True,
+                                            torch_dtype=torch.bfloat16, low_cpu_mem_usage=True).eval()
+size = sum(p.numel() * p.element_size() for p in model.parameters()) / 2**30
+print(f"パラメータ: {size:.2f} GiB, dtype: {next(model.parameters()).dtype}（bf16 なら 6.8 GiB 前後が正常）")
+model.to("cuda:0")
+gpu_mem("after model load")
+del model
+gc.collect(); torch.cuda.empty_cache()
+gpu_mem("after free")
+mark("診断", True, f"モデル {size:.1f} GiB / 残骸 {before:.1f} GiB")
+'''
+
 RUN_CELL = '''
 # --- ベンチ → ETA → 4段ステージ実行（途中で落ちても再実行で再開） ---
 if not READY:
@@ -396,8 +440,10 @@ except Exception as exc:
         print("   ・Python 環境が壊れています（pip が numpy を差し替えた影響）。")
         print("     Run -> Restart session → セル3を INSTALL_MODE='image' で実行し直してください。")
     if "out of memory" in low or ("cuda" in low and "memory" in low):
-        print("   ・GPU メモリ不足。セル1で SECONDS を 60 などに短くする、ODE_STEPS を下げる、")
-        print("     ノートを Run -> Restart session してから実行し直してください。")
+        print("   ・GPU メモリ不足。まず Run -> Restart session（前回失敗した実行の残骸が GPU に残って")
+        print("     いるため、そのまま再実行すると必ず同じ場所で落ちます）。")
+        print("   ・そのうえでセル1の SECONDS を 60 などに短くし、ODE_STEPS を下げてください。")
+        print("   ・原因を数字で確認したいときは、上の「診断」セルを実行してください。")
     if "resolve host" in low or "connection" in low or "internet" in low:
         print("   ・外部通信に失敗。Settings -> Internet が [On] か確認してください。")
     if "cuda" in low and "available" in low:
@@ -533,6 +579,8 @@ def build() -> dict:
         code(PREFLIGHT_CELL),
         md("## 6. 実行オプション"),
         code(OPTIONS_CELL),
+        md("### 任意: うまく動かないときの診断"),
+        code(DIAGNOSTIC_CELL),
         md("## 7. 実測ベンチ → 生成（再開可能）"),
         code(RUN_CELL),
         md("## 8. 結果"),
