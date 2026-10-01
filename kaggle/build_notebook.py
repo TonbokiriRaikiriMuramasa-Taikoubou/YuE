@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Build ``YuE2_Kaggle.ipynb`` from this directory's sources.
+
+The notebook embeds ``yue2_kaggle.py`` verbatim in a ``%%writefile`` cell, so the
+repository and the notebook can never drift apart. Re-run this script after
+editing the driver::
+
+    python kaggle/build_notebook.py
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DRIVER = HERE / "yue2_kaggle.py"
+NOTEBOOK = HERE / "YuE2_Kaggle.ipynb"
+
+
+def md(text: str) -> dict:
+    return {"cell_type": "markdown", "metadata": {}, "source": text.strip("\n").splitlines(True)}
+
+
+def code(text: str) -> dict:
+    return {"cell_type": "code", "execution_count": None, "metadata": {},
+            "outputs": [], "source": text.strip("\n").splitlines(True)}
+
+
+HEADER = """
+# YuE2 を Kaggle の無料 GPU で動かす（T4 x2 / 16 GB 向け調整済み）
+
+[YuE2](https://github.com/multimodal-art-projection/YuE)（`m-a-p/YuE2-3B` + `YuE2-Vae`）は
+公式には **BF16 対応 GPU / 24 GB VRAM** を前提にしています。Kaggle の無料枠は
+**P100 (16 GB, cc 6.0)** または **T4 x2 (各 16 GB, cc 7.5)** で、セッションは最大 12 時間、
+GPU は週 30 時間まで、`/kaggle/working` は 20 GB まで保存されます。
+
+このノートブックは、その差を埋めるための最小限の調整だけを行います。
+
+| 項目 | 対応 |
+|---|---|
+| 16 GB VRAM | `memory_budget_gib` を実測 VRAM から算出、`vae_core_frames=512`、VAD は常に 512 フレーム単位 |
+| BF16 非ネイティブ (T4) | PyTorch が Turing では BF16 をエミュレートするため**実行は可能**。ただし遅い（実測で確認） |
+| P100 (cc 6.0) | `torch.cuda.is_bf16_supported()` が False になり pipeline が起動を拒否 → **T4 x2 を選び直してください** |
+| セッション 12 時間 / 20 分アイドル | 生成を **plan → semantic → flow matching → decode** の4段に分割し、各段をディスクに保存。時間切れでも**再開可能** |
+| どれくらい時間がかかるか不明 | 実モデルで 1〜2 分の**実測ベンチ**を取り、曲ごとの所要時間(ETA)を先に出します |
+
+**モデルの重みは CC BY-NC 4.0（非商用）です。**個人クリエイターの制作物の利用は許諾されていますが、
+企業の商用利用には別途ライセンスが必要です（[MODEL_LICENSE](https://github.com/multimodal-art-projection/YuE/blob/main/MODEL_LICENSE)）。
+カグルのノートは既定で公開になるため、出力を公開したくない場合は右上の Settings で Private にしてください。
+
+## 使い方
+
+1. この `.ipynb` を Kaggle の **Code → New Notebook → File → Import Notebook** で取り込みます。
+2. 右上 **Settings** で **Accelerator = GPU T4 x2**、**Internet = On** にします。
+3. 下の「設定」セルを書き換えて、**Save & Run All (Commit)** または上から順に実行します。
+   - 長時間かかる曲は **Commit** 実行（最大12時間、ブラウザを閉じても継続）を推奨。対話実行は20分無操作で停止します。
+   - 途中で止まっても、同じ設定でもう一度実行すれば続きから再開します。
+4. 出力は `/kaggle/working/outputs/<id>/`（`audio.flac` など）に保存され、ノートブックの Output からダウンロードできます。
+"""
+
+CONFIG_CELL = '''
+# ============================ 設定（ここだけ編集） ============================
+STYLE = (
+    "English, warm piano pop, expressive female voice, acoustic piano, "
+    "rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM"
+)
+LYRICS = """[Verse]
+Neon fades along the lane
+Footsteps keep the time of rain
+[Chorus]
+Let the day come into view
+Every road begins with you"""
+
+COT = "full"            # full（メロディ+コード譜を自動生成）/ melody / off（譜面なし）
+SECONDS = 120.0         # 生成する長さ（秒）。まずは 60〜120 秒で試すのがおすすめ
+SEED = 831001
+ODE_STEPS = 32          # 公式デフォルト。下げると速いが品質はトレードオフ（8〜16 で実験）
+PLAN_MAX_TOKENS = None  # ABC 譜生成の上限（公式は 4096）。スモークテスト時のみ 512〜1024 などに
+                        # 下げる。譜面が途中で切れる=品質が変わるので本番比較には使わないこと
+ABC = None              # 手持ちの ABC 譜を使う場合は文字列で指定（例: open("score.abc").read()）
+                        # ABC を渡すと譜面生成(plan)を丸ごと省略でき、その分速くなります
+
+OUTPUT_ID = "song-01"
+BUDGET_MINUTES = 600    # この実行で使う時間の上限（12h セッションなら 660 くらいまで可）
+SAFETY_MINUTES = 10     # セッション破棄に備えて残す余裕
+
+RUN_BENCHMARK = True    # 実モデルで実測ベンチを取る（1〜2分）。ETA を出してから本番へ
+FORCE_RUN = False       # ETA が予算を超えていても強行する
+
+INSTALL_MODE = "pinned" # "pinned": 公式ピン留め依存を入れる / "fast": Kaggle 同梱 torch を使う
+PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/working に置く（後で Dataset 化しやすい）
+REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"
+REPO_REF = "main"
+
+import os
+from pathlib import Path
+
+WORKDIR = Path("/kaggle/working") if Path("/kaggle").exists() else Path.cwd()
+REPO_DIR = WORKDIR / "YuE"
+OUTDIR = WORKDIR / "outputs" / OUTPUT_ID
+if PERSIST_MODEL:
+    os.environ["HF_HOME"] = str(WORKDIR / "hf-cache")
+print("output directory:", OUTDIR)
+'''
+
+GPU_CELL = """
+# --- まず torch 抜きで GPU の種類を確認（P100 ならここで分かります） ---
+!nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+!python -c "import sys; print('python', sys.version.split()[0])"
+!df -h /kaggle/working | tail -1
+"""
+
+INSTALL_CELL = """
+# --- リポジトリの取得と依存のインストール（初回 3〜8 分程度） ---
+import subprocess, sys, os
+
+if not (REPO_DIR / "pyproject.toml").is_file():
+    subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_REF, REPO_URL, str(REPO_DIR)],
+                   check=True)
+
+def pip(*args):
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", *args], check=True)
+
+if INSTALL_MODE == "pinned":
+    # 公式にピン留めされた torch==2.10.0 / transformers==4.57.6 等を入れる（再現重視）
+    pip(str(REPO_DIR))
+else:
+    # Kaggle 同梱の CUDA 対応 torch をそのまま使い、軽い依存だけ入れる（速いが非公式）
+    pip("--no-deps", str(REPO_DIR))
+    pip("transformers==4.57.6", "huggingface-hub==0.36.2", "safetensors==0.7.0",
+        "tiktoken==0.12.0", "soundfile==0.13.1", "accelerate==1.13.0")
+
+import torch  # noqa: E402
+print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
+"""
+
+DRIVER_CELL_PREFIX = """%%writefile /kaggle/working/yue2_kaggle.py
+"""
+
+IMPORT_CELL = """
+import sys
+sys.path.insert(0, "/kaggle/working")          # the %%writefile cell above
+sys.path.append(str(REPO_DIR / "kaggle"))      # offline/local fallback: use the repo copy
+import importlib, yue2_kaggle as yk
+importlib.reload(yk)
+print("driver:", yk.__file__)
+"""
+
+PREFLIGHT_CELL = """
+# --- プリフライト: デバイス・VRAM・ディスク・BF16 判定（pipeline と同じ判定を使う） ---
+report = yk.environment()
+READY = yk.print_report(report)["ok"]
+
+if not READY:
+    print("\\n>>> この環境では実行できません。Settings で Accelerator を 'GPU T4 x2' に変えて再実行してください。")
+else:
+    settings = yk.pipeline_settings(report)
+    print("recommended:", {k: round(v, 2) if isinstance(v, float) else v for k, v in settings.items()})
+"""
+
+OPTIONS_CELL = """
+# --- 実行オプションを組み立てる（設定セル＋環境から） ---
+
+# HF トークン（モデルが gated の場合は Kaggle Secrets に HF_TOKEN を登録）
+HF_TOKEN = None
+try:
+    from kaggle_secrets import UserSecretsClient
+    HF_TOKEN = UserSecretsClient().get_secret("HF_TOKEN")
+except Exception:
+    HF_TOKEN = os.environ.get("HF_TOKEN", None)
+
+opts = yk.Options(
+    outdir=OUTDIR, style=STYLE, lyrics=LYRICS, cot=COT, seed=SEED, seconds=SECONDS,
+    ode_steps=ODE_STEPS, abc=ABC, token=HF_TOKEN, plan_max_tokens=PLAN_MAX_TOKENS,
+    budget_minutes=BUDGET_MINUTES, safety_minutes=SAFETY_MINUTES,
+)
+print("曲の長さ:", opts.frames, "frames =", f"{opts.seconds:.0f}s",
+      "| semantic max_tokens:", opts.semantic_sampling()["max_tokens"])
+print("モデル:", yk.resolve_models(opts, report))
+print("既存の出力:", sorted(p.name for p in OUTDIR.iterdir()) if OUTDIR.exists() else "(なし=新規)")
+"""
+
+RUN_CELL = """
+# --- ベンチ → ETA → 4段ステージ実行（途中で落ちても再実行で再開） ---
+if not READY:
+    raise RuntimeError("プリフライトに失敗しています。上のセルを確認してください。")
+
+with yk.open_pipeline(report, opts) as handle:
+    rates = None
+    if RUN_BENCHMARK:
+        rates = yk.measure(handle)
+        stages = yk.predict(rates, opts)
+        yk.print_estimate(stages, opts)
+        if not stages["fits_budget"] and not FORCE_RUN:
+            print("\\n>>> ETA が予算を超えています。SECONDS を下げる / ODE_STEPS を下げる / "
+                  "FORCE_RUN=True で強行、のいずれかを選んでください。")
+            outcome = {"status": "skipped", "reason": "estimate exceeds budget"}
+        else:
+            outcome = yk.run(handle, opts, rates=rates)
+    else:
+        outcome = yk.run(handle, opts)
+
+print(outcome.get("status"), "->", outcome.get("outdir"))
+if outcome.get("status") == "interrupted":
+    print("時間切れで安全に停止しました（完了した段は保存済み）。"
+          "そのまま再実行すると続きから再開します。")
+"""
+
+RESULT_CELL = """
+# --- 結果の確認と試聴 ---
+import json
+from pathlib import Path
+from IPython.display import Audio, display
+
+audio_path = OUTDIR / "audio.flac"
+if audio_path.is_file():
+    result = json.loads((OUTDIR / "result.json").read_text(encoding="utf-8"))
+    print(f"audio: {result['audio_seconds']:.1f}s @ {result['sample_rate']} Hz "
+          f"| truncated: {result['truncated']}")
+    print("files:", ", ".join(f"{p.name} ({p.stat().st_size/1e6:.1f} MB)"
+                              for p in sorted(OUTDIR.iterdir())))
+    display(Audio(filename=str(audio_path)))
+    print("\\n曲の構成(ABC 譜)を確認するには score.abc を開いてください:",
+          OUTDIR / "score.abc" if (OUTDIR / "score.abc").exists() else "(ABC なし: cot=off)")
+    run_state = OUTDIR / "kaggle_run.json"
+    if run_state.is_file():
+        print(json.dumps(json.loads(run_state.read_text(encoding='utf-8')).get("stages", {}),
+                         indent=1, ensure_ascii=False))
+else:
+    print("まだ音声がありません。上の実行セルを走らせてください（再実行で続きから再開します）。")
+"""
+
+TIPS = """
+## 詰まりやすい点とコツ
+
+**時間の見積もり。** 公式リポジトリの資料やコミュニティ計測では、RTX 4090 で 3.6 分の曲に約 71 秒
+とされています。T4 は BF16 がネイティブでなくメモリ帯域も 1/3 程度なので、**同条件で 10〜30 倍程度**かかる
+ことを想定してください。正確な数字はこのノートの実測ベンチが出します。内訳の支配項は
+flow matching（`frames × 28層 × 64 velocity evals`）で、`ODE_STEPS` と曲の長さにほぼ比例します。
+
+**短く試す。** まず `SECONDS=60〜120`, `COT="melody"` + 手持ち ABC, `ODE_STEPS=8〜16` で
+「鳴るかどうか」を確かめ、それから本番設定に上げるのが安全です。`cot="off"` は譜面生成を省ける代わりに
+guidance 1.01（CFG 2分岐）になり、メモリも計算もほぼ倍になるので T4 では不利です。
+
+**時間切れの扱い。** 実行セルは `BUDGET_MINUTES - SAFETY_MINUTES` を過ぎると pipeline の
+`cancelled` フックで**安全に停止**します（例外で落ちず、status が `interrupted` になります）。
+このときも完了済みの段はディスクに残っているので、再実行で続きから進みます。
+
+**再開の仕組み。** 出力ディレクトリに `plan_manifest.json` / `semantic.npy` / `latent.npy` /
+`latent_chunk_XXXX.npy` / `audio.flac` が段ごとに保存されます。同じ `OUTPUT_ID` で再実行すると、
+終わった段はスキップして続きから進みます。`Plan` が保存されているので、歌詞を変えずに再開するのは安全です
+（歌詞やスタイルを変えるときは `OUTPUT_ID` を変えてください）。
+
+**セッションを跨ぐコスト。** モデル(約 7.8 GB)はセッションごとに Hugging Face から取り直します
+（数分）。`PERSIST_MODEL=True` にすると `/kaggle/working/hf-cache` に置かれ、そのフォルダを
+Kaggle Dataset（Private）にすれば次回 `/kaggle/input` から自動検出して再利用できます。
+
+**メモリ。** このノートは `memory_budget_gib` を VRAM から自動決定し、`vae_core_frames=512`、
+必要なら `offload_ar=True` を使います。それでも OOM になる場合は `SECONDS` を短くしてください
+（semantic の KV キャッシュは要求長に比例して縮みます）。
+
+**品質についての注意。** T4 の BF16 はエミュレーションで**数値は正しくても速くない**だけです。
+一方 `ODE_STEPS` を下げる/譜面なし(`cot="off"`)にするといった変更は品質そのものを変えます。
+比べるときは同じ条件どうしで比べ、結果を「公式ベンチマークの再現」と呼ばないでください。
+
+**うまくいかないとき。**
+- `FlashAttention only supports Ampere GPUs` などが出たら、このノートは自動で `torch-eager` に切り替えます
+  （CUDA graph / flash を使わない経路。遅いが T4 でも動きます）。
+- GPU が P100 だった → Settings で `GPU T4 x2` に変更。
+- CUDA OOM → `SECONDS` を下げる、`ODE_STEPS` を下げる、ノートを再起動。
+- 生成が途中で止まった → 出力ディレクトリを確認し、そのまま再実行（続きから再開）。
+
+**代替手段。** どうしても T4 で時間が足りない場合、量子化版（GGUF / MLX）や
+公式のオンラインデモ・API を使う手もあります。このリポジトリの公式要件（24 GB BF16）を満たす
+GPU が使えるなら、そちらの方が確実です。
+
+## 参考
+
+- 公式リポジトリ: https://github.com/multimodal-art-projection/YuE
+- モデル: https://huggingface.co/m-a-p/YuE2-3B / https://huggingface.co/m-a-p/YuE2-Vae
+- ライセンス: 重みは CC BY-NC 4.0（個人の制作物の収益化は許諾、企業の商用は要相談）
+"""
+
+
+def build() -> dict:
+    driver = DRIVER.read_text(encoding="utf-8")
+    cells = [
+        md(HEADER),
+        md("## 1. 設定"),
+        code(CONFIG_CELL),
+        md("## 2. GPU の確認（インストール前）"),
+        code(GPU_CELL),
+        md("## 3. 依存のインストール"),
+        code(INSTALL_CELL),
+        md("## 4. 実行ドライバの書き出し"),
+        code(DRIVER_CELL_PREFIX + driver),
+        code(IMPORT_CELL),
+        md("## 5. プリフライト"),
+        code(PREFLIGHT_CELL),
+        md("## 6. 実行オプション"),
+        code(OPTIONS_CELL),
+        md("## 7. 実測ベンチ → 生成（再開可能）"),
+        code(RUN_CELL),
+        md("## 8. 結果"),
+        code(RESULT_CELL),
+        md(TIPS),
+    ]
+    return {
+        "cells": cells,
+        "metadata": {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": "3.11"},
+            "kaggle": {"accelerator": "nvidiaTeslaT4", "dataSources": [], "isGpuEnabled": True,
+                       "isInternetEnabled": True, "language": "python",
+                       "sourceType": "notebook"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 4,
+    }
+
+
+def main() -> int:
+    notebook = build()
+    NOTEBOOK.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    # sanity: the embedded cell must reproduce the driver (modulo trailing newline)
+    embedded = "".join(notebook["cells"][8]["source"])[len(DRIVER_CELL_PREFIX):]
+    if embedded.rstrip("\n") != DRIVER.read_text(encoding="utf-8").rstrip("\n"):
+        raise SystemExit("embedded driver differs from kaggle/yue2_kaggle.py")
+    print(f"wrote {NOTEBOOK} ({NOTEBOOK.stat().st_size / 1024:.0f} KiB, "
+          f"{len(notebook['cells'])} cells)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
