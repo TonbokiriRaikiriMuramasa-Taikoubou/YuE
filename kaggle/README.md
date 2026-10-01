@@ -65,7 +65,9 @@ python kaggle/yue2_kaggle.py run \
    9000 固定をやめると VRAM と無駄な生成を同時に削減）
 5. GPU の残骸（前回失敗した実行が Jupyter のトレースバック経由で保持しているテンソル）を検出し、
    例外時に参照を切って解放。`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` も既定で設定
-6. CUDA graph / flash attention が Turing で拒否された場合、`torch-eager` に**自動フォールバック**して続行
+6. **Turing (cc < 8.0) では最初から `torch-eager`** を選び（flash attention は Ampere 以降専用）、
+   万一高速経路が拒否された場合も**再構築せず同じ pipeline の `backend` を差し替えて**続行
+   （モデルの再ハッシュ 22 秒と二重ロードによる OOM を回避）
 
 ## 実行の仕組み（セッション切れに耐える）
 

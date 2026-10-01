@@ -65,6 +65,12 @@ GRAPH_FALLBACK_HINTS = (
     "flash", "flashattention", "sm_80", "ampere", "compute capability",
     "cuda graph", "cudagraph", "cudnn", "scaled_dot_product_attention",
 )
+# A second downgrade step for cards whose fused attention kernels cannot run the
+# dtype at all; the math SDPA backend always works.
+KERNEL_FALLBACK_HINTS = (
+    "no available kernel", "bf16", "not supported", "not implemented",
+    "unimplemented", "aten::", "cutlass", "no kernel image",
+)
 
 DEFAULT_STYLE = (
     "English, warm piano pop, expressive female voice, acoustic piano, "
@@ -494,33 +500,69 @@ def ode_config(options: Options):
     return GenerationConfig.from_dict(base)
 
 
+def compute_capability(report: dict):
+    """(major, minor) of the device the report describes, or None."""
+    device = report.get("device")
+    if not device:
+        index = int(str(report.get("current_device", "cuda:0")).split(":")[-1])
+        devices = report.get("devices") or []
+        device = devices[index] if index < len(devices) else (devices[0] if devices else None)
+    if not device:
+        return None
+    capability = device.get("compute_capability")
+    return tuple(capability) if capability else None
+
+
 class PipelineHandle:
-    """Pipeline plus the ability to rebuild when the GPU cannot execute the
-    CUDA-graph/flash fast path (common on Turing/T4 and on old drivers)."""
+    """Pipeline that knows which fast paths this GPU can actually execute.
+
+    Two things matter on a 16 GB Turing card:
+
+    * The upstream fast path (CUDA graphs + PyTorch's variable-length
+      FlashAttention) requires Ampere or newer. On T4 (cc 7.5) it fails inside
+      ``GraphAR`` *after* allocating its caches, so the backend is chosen from
+      the compute capability up front instead of by trial.
+    * Recovering from such a failure must not build a second pipeline: hashing
+      the 7.3 GB checkpoint again costs ~22 s and loading a second model while
+      the first is still referenced causes an out-of-memory error. The downgrade
+      below flips ``backend`` on the *existing, already-verified* pipeline and
+      releases the failed attempt's tensors first.
+    """
 
     def __init__(self, report: dict, options: Options):
         self.report = report
         self.options = options
         self.generation_config = ode_config(options)
+        self.level = 0                       # 0 = fast path, 1 = torch-eager, 2 = math SDPA
         self.backend = "torch" if options.backend == "auto" else options.backend
+        self.backend_reason = "requested explicitly" if options.backend != "auto" else "default"
+        if options.backend == "auto":
+            capability = compute_capability(report)
+            if capability is not None and tuple(capability) < (8, 0):
+                self.backend = "torch-eager"
+                self.level = 1
+                self.backend_reason = (f"cc {capability[0]}.{capability[1]} has no "
+                                       "FlashAttention; CUDA graphs are unavailable")
+                print(f"[kaggle] backend='torch-eager' from the start: {self.backend_reason}. "
+                      "Slower than Ampere, but correct.", flush=True)
         self.pipe = build_pipeline(report, options, self.backend,
                                    generation_config=self.generation_config)
 
-    def retry_eager(self, exc: BaseException) -> bool:
-        """Rebuild with the eager backend after a graph/flash refusal."""
-        message = str(exc).lower()
-        if self.options.backend != "auto" or self.backend != "torch":
-            return False
-        if not any(hint in message for hint in GRAPH_FALLBACK_HINTS):
-            return False
-        print(f"[kaggle] {type(exc).__name__}: {exc}\n"
-              "[kaggle] retrying with backend='torch-eager' (no CUDA graphs, no flash attention).",
-              flush=True)
-        self.close()
-        self.backend = "torch-eager"
-        self.pipe = build_pipeline(self.report, self.options, self.backend,
-                                   generation_config=self.generation_config)
-        return True
+    # -- memory ---------------------------------------------------------------
+    @staticmethod
+    def _release(exc: BaseException | None) -> None:
+        """Break the reference chain that keeps a failed attempt on the GPU.
+
+        Jupyter keeps the last traceback alive; its deep frames hold the model,
+        the graph and the KV caches. Clearing ``__traceback__`` before freeing
+        the pipeline is what actually returns the VRAM to the driver.
+        """
+        if exc is not None:
+            try:
+                exc.__traceback__ = None
+            except Exception:                        # pragma: no cover - best effort
+                pass
+        release_gpu_memory()
 
     def release_memory(self) -> dict:
         """Free this handle's model and hand cached GPU blocks back to the driver."""
@@ -535,6 +577,61 @@ class PipelineHandle:
                 pass
         self.pipe = None
         release_gpu_memory()
+
+    # -- downgrade ------------------------------------------------------------
+    @staticmethod
+    def _disable_fused_sdpa() -> None:
+        try:
+            import torch
+
+            for name in ("enable_flash_sdp", "enable_mem_efficient_sdp", "enable_cudnn_sdp"):
+                toggle = getattr(torch.backends.cuda, name, None)
+                if callable(toggle):
+                    toggle(False)
+        except Exception:                            # pragma: no cover - best effort
+            pass
+
+    def downgrade(self, exc: BaseException) -> bool:
+        """Step down to a path this GPU can run, in place, and free the failure.
+
+        Returns True when a downgrade happened, so the caller can retry the stage
+        on the same handle.
+        """
+        if self.options.backend != "auto":
+            return False
+        message = str(exc).lower()
+        if self.level == 0 and any(hint in message for hint in GRAPH_FALLBACK_HINTS):
+            self.level, target = 1, "torch-eager"
+            reason = "no CUDA graphs / FlashAttention on this GPU"
+        elif self.level <= 1 and any(hint in message for hint in KERNEL_FALLBACK_HINTS):
+            self.level, target = 2, "torch-eager"
+            reason = "a fused attention kernel was refused; restricting to math SDPA"
+            self._disable_fused_sdpa()
+        else:
+            return False
+
+        held = gpu_memory().get("allocated_gib", 0.0)
+        self._release(exc)
+        freed = held - gpu_memory().get("allocated_gib", 0.0)
+        print(f"[kaggle] {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+        print(f"[kaggle] downgrading in place to {target}: {reason} "
+              f"(released {freed:.2f} GiB; the verified pipeline is reused, "
+              "nothing is hashed or loaded again)", flush=True)
+
+        if self.pipe is None:                        # unexpected: build once with the safe backend
+            self.backend = target
+            self.pipe = build_pipeline(self.report, self.options, target,
+                                       generation_config=self.generation_config)
+        else:
+            self.backend = target
+            self.pipe.backend = target               # same weights, same identity
+            self.pipe.close()                        # drop the GPU copy; stages reload lazily
+        self.backend_reason = reason
+        return True
+
+    def retry_eager(self, exc: BaseException) -> bool:
+        """Alias of :meth:`downgrade` kept for callers written earlier."""
+        return self.downgrade(exc)
 
     def __enter__(self):
         return self
@@ -553,7 +650,7 @@ def run_with_retry(handle: PipelineHandle, stage):
     try:
         return stage(handle.pipe)
     except (RuntimeError, NotImplementedError, ValueError) as exc:
-        if not handle.retry_eager(exc):
+        if not handle.downgrade(exc):
             if "out of memory" in str(exc).lower():
                 release = getattr(handle, "release_memory", None)
                 if callable(release):
@@ -572,7 +669,7 @@ def open_pipeline(report: dict, options: Options, *, log=print) -> PipelineHandl
             "run, otherwise the model load can run out of memory.")
     handle = PipelineHandle(report, options)
     settings = pipeline_settings(report)
-    log(f"[kaggle] pipeline ready: backend={handle.backend}, "
+    log(f"[kaggle] pipeline ready: backend={handle.backend} ({handle.backend_reason}), "
         f"device={handle.pipe.device}, offload_ar={handle.pipe.offload_ar}, "
         f"vae_core_frames={handle.pipe.vae_core_frames}, "
         f"budget={handle.pipe.memory_budget_gib:.1f} GiB "

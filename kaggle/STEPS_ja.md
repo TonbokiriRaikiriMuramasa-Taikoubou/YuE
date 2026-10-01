@@ -154,11 +154,31 @@ from IPython.display import FileLink; FileLink(f"{OUTDIR}/audio.mp3")
 | カーネルが古いままかも？ | セル4が出す `build` の値を確認。ノートを取り込み直したのに値が古いときは、ドライバのセル（`%%writefile`）を再実行 |
 | GPU クォータが足りない | 右のアカウント表示で残り時間を確認（週 30 時間） |
 | CUDA out of memory | **順番が大事**（下の「OOM が出たら」を参照）。まず **Run → Restart session** |
-| `FlashAttention ...` のエラー | 自動で `torch-eager` に切り替わります（ログに 1 行出る）。遅いが動きます |
+| `FlashAttention only supports Ampere GPUs or newer.` | **T4 では正常な動作です。** ノートは最初から / あるいは自動で `torch-eager` に切り替えます（ログに 1 行）。遅いが正しく動きます |
 | 出力が残らない / 保存に失敗 | `/kaggle/working` は 20 GB まで。`PERSIST_MODEL=False`、古い出力を削除 |
 | ETA が予算を超えて生成されない | `SECONDS` を下げるか、`FORCE_RUN=True` で強行 |
 
 ---
+
+## 6.4 T4 では「自動で安全な経路」に切り替わります（正常）
+
+上流の高速経路（CUDA graph + FlashAttention）は **Ampere 以降（cc 8.0+）専用**です。
+T4 (cc 7.5) では使えないため、このノートは **最初から `torch-eager` を選びます**。実行ログに
+
+```
+[kaggle] backend='torch-eager' from the start: cc 7.5 has no FlashAttention;
+         CUDA graphs are unavailable. Slower than Ampere, but correct.
+[kaggle] pipeline ready: backend=torch-eager (cc 7.5 has no FlashAttention; ...)
+```
+
+と出ますが、**これはエラーではありません**。もし何かの拍子に高速経路で失敗しても、
+
+```
+[kaggle] downgrading in place to torch-eager: ... (released X.XX GiB; the verified
+         pipeline is reused, nothing is hashed or loaded again)
+```
+
+と出て自動で切り替わり、**モデルの再検証（22秒）や再読み込みは行いません**。
 
 ## 6.5 OOM（GPU メモリ不足）が出たら
 

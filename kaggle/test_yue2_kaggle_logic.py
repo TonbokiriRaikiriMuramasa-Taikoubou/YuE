@@ -12,7 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))          # the runner
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))  # yue2.protocol (no torch)
 
 import yue2_kaggle as yk  # noqa: E402
 
@@ -151,13 +152,105 @@ def _frames(exception):
     return names
 
 
+class _FakePipe:
+    """Stands in for YuE2Pipeline: the handle only flips .backend and closes it."""
+
+    def __init__(self):
+        self.backend = "torch"
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+def _t4_report():
+    return {"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
+            "bf16_supported": True, "bf16_native": False,
+            "devices": [{"name": "Tesla T4", "memory_gib": 15.9, "free_gib": 15.9,
+                         "compute_capability": [7, 5]}]}
+
+
+def _ampere_report():
+    return {"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
+            "bf16_supported": True, "bf16_native": True,
+            "devices": [{"name": "NVIDIA A10G", "memory_gib": 23.6, "free_gib": 23.6,
+                         "compute_capability": [8, 6]}]}
+
+
+def test_backend_is_chosen_from_compute_capability(monkeypatch):
+    built = []
+
+    def fake_build(report, options, backend, generation_config=None):
+        built.append(backend)
+        pipe = _FakePipe()
+        pipe.backend = backend
+        return pipe
+
+    monkeypatch.setattr(yk, "build_pipeline", fake_build)
+    options = yk.Options(seconds=60)
+
+    t4 = yk.PipelineHandle(_t4_report(), options)          # cc 7.5: flash is impossible
+    assert t4.backend == "torch-eager" and t4.level == 1
+    assert "no FlashAttention" in t4.backend_reason
+
+    ampere = yk.PipelineHandle(_ampere_report(), options)  # cc 8.6: fast path stays
+    assert ampere.backend == "torch" and ampere.level == 0
+
+    explicit = yk.PipelineHandle(_t4_report(), yk.Options(seconds=60, backend="torch"))
+    assert explicit.backend == "torch" and "explicit" in explicit.backend_reason
+
+    assert built == ["torch-eager", "torch", "torch"]
+
+
+def test_downgrade_is_in_place_and_releases_the_failure(monkeypatch):
+    monkeypatch.setattr(yk, "build_pipeline",
+                        lambda report, options, backend, generation_config=None: _FakePipe())
+    handle = yk.PipelineHandle(_ampere_report(), yk.Options(seconds=60))
+    pipe = handle.pipe
+    error = RuntimeError("FlashAttention only supports Ampere GPUs or newer.")
+    try:
+        raise error
+    except RuntimeError as exc:
+        assert handle.downgrade(exc) is True
+        assert exc.__traceback__ is None, "the traceback pins the failed model in VRAM"
+
+    assert handle.pipe is pipe, "downgrade must reuse the verified pipeline, not rebuild it"
+    assert handle.pipe.backend == "torch-eager" and handle.backend == "torch-eager"
+    assert pipe.closed == 1, "the GPU copy must be dropped so the stage reloads it"
+
+
+def test_second_downgrade_step_restricts_attention(monkeypatch):
+    monkeypatch.setattr(yk, "build_pipeline",
+                        lambda report, options, backend, generation_config=None: _FakePipe())
+    calls = []
+    monkeypatch.setattr(yk.PipelineHandle, "_disable_fused_sdpa",
+                        staticmethod(lambda: calls.append("disabled")))
+    handle = yk.PipelineHandle(_ampere_report(), yk.Options(seconds=60))
+    handle.downgrade(RuntimeError("FlashAttention only supports Ampere GPUs or newer."))
+    assert handle.level == 1 and calls == []
+    handle.downgrade(RuntimeError("No available kernel for bf16 scaled_dot_product_attention"))
+    assert handle.level == 2 and calls == ["disabled"]
+    assert handle.downgrade(RuntimeError("still broken")) is False
+
+
+def test_downgrade_leaves_explicit_backends_alone(monkeypatch):
+    monkeypatch.setattr(yk, "build_pipeline",
+                        lambda report, options, backend, generation_config=None: _FakePipe())
+    handle = yk.PipelineHandle(_ampere_report(), yk.Options(seconds=60, backend="torch"))
+    error = RuntimeError("FlashAttention only supports Ampere GPUs or newer.")
+    try:
+        raise error
+    except RuntimeError as exc:
+        assert handle.downgrade(exc) is False
+
+
 def test_failed_stage_drops_its_traceback():
     """Jupyter keeps the last traceback; its frames would pin GPU tensors."""
 
     class Handle:
         pipe = "pipe"
 
-        def retry_eager(self, exc):
+        def downgrade(self, exc):
             return False
 
         def release_memory(self):
@@ -294,7 +387,7 @@ def test_run_with_retry_retries_a_graph_refusal_but_not_a_real_error():
     class Handle:
         pipe = "rebuilt"
 
-        def retry_eager(self, exc):
+        def downgrade(self, exc):
             seen.append(type(exc).__name__)
             return True
 
@@ -312,7 +405,7 @@ def test_run_with_retry_retries_a_graph_refusal_but_not_a_real_error():
     assert seen == ["ValueError", "RuntimeError"]
 
     class Stubborn(Handle):
-        def retry_eager(self, exc):
+        def downgrade(self, exc):
             return False
 
     for error in (RuntimeError("CUDA out of memory"), ValueError("bad request")):
@@ -327,15 +420,47 @@ def test_run_with_retry_retries_a_graph_refusal_but_not_a_real_error():
             raise AssertionError(f"{error!r} must not be swallowed")
 
 
+class _MonkeyPatch:
+    """The small part of pytest's monkeypatch fixture this file needs, so the
+    checks also run with a plain ``python kaggle/test_yue2_kaggle_logic.py``."""
+
+    def __init__(self):
+        self._undo = []
+
+    def setattr(self, target, name, value, raising=True):
+        had = hasattr(target, name)
+        old = getattr(target, name, None)
+        setattr(target, name, value)
+        self._undo.append((target, name, had, old))
+
+    def undo(self):
+        for target, name, had, old in reversed(self._undo):
+            if had:
+                setattr(target, name, old)
+            else:
+                delattr(target, name)
+        self._undo.clear()
+
+
 if __name__ == "__main__":
+    import inspect
+
     failures = 0
     for name, function in sorted(globals().items()):
-        if name.startswith("test_") and callable(function):
-            try:
-                function()
-            except AssertionError as exc:
-                failures += 1
-                print(f"FAIL {name}: {exc}")
-            else:
-                print(f"pass {name}")
+        if not (name.startswith("test_") and callable(function)):
+            continue
+        patch = _MonkeyPatch()
+        kwargs = {"monkeypatch": patch} if "monkeypatch" in inspect.signature(function).parameters else {}
+        try:
+            function(**kwargs)
+        except AssertionError as exc:
+            failures += 1
+            print(f"FAIL {name}: {exc}")
+        except Exception as exc:                       # noqa: BLE001 - report and continue
+            failures += 1
+            print(f"ERROR {name}: {type(exc).__name__}: {exc}")
+        else:
+            print(f"pass {name}")
+        finally:
+            patch.undo()
     raise SystemExit(1 if failures else 0)
