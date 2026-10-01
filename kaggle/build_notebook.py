@@ -66,7 +66,7 @@ IDEA_CELL = '''
 # STYLE : 「言語, ジャンル, ボーカル, 楽器, 雰囲気, テンポ(BPM)」をカンマ区切りで並べます。
 #         日本語で歌わせたいときは先頭を "Japanese" にして、LYRICS に日本語をそのまま書けます。
 # LYRICS: [Verse] / [Chorus] などのタグで区切り、1行は7音節くらいが歌いやすい長さです。
-#         曲の長さ・品質は次のセル（2) 生成の設定）で決まります。
+#         曲の長さ・品質はセル2「生成の設定」で決まります。
 import os, re
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # torch より先に必要
 
@@ -324,7 +324,7 @@ print("image before:", {n: version(n) for n in
 try:
     if not (REPO_DIR / "pyproject.toml").is_file():
         if not INTERNET:
-            raise RuntimeError("Internet が Off です（セル2の診断を参照）")
+            raise RuntimeError("Internet が Off です（バナー 3/9 の診断を参照）")
         if REPO_DIR.exists() and not any(REPO_DIR.iterdir()):
             REPO_DIR.rmdir()          # 失敗した clone の空ディレクトリが残っていたら片付ける
         subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_REF, REPO_URL, str(REPO_DIR)],
@@ -489,7 +489,7 @@ mark("7/9 診断", True, f"モデル {size:.1f} GiB / 残骸 {before:.1f} GiB")
 RUN_CELL = '''
 # --- ベンチ → ETA → 4段ステージ実行（途中で落ちても再実行で再開） ---
 if not READY:
-    raise RuntimeError("プリフライトに失敗しています。セル5を確認してください。")
+    raise RuntimeError("プリフライトに失敗しています。バナー 6/9 の出力を確認してください。")
 
 try:
     with yk.open_pipeline(report, opts) as handle:
@@ -515,11 +515,11 @@ except Exception as exc:
     print("   考えられる原因と対処:")
     if "_center" in low or "umath" in low or "_nocopy" in low:
         print("   ・Python 環境が壊れています（pip が numpy を差し替えた影響）。")
-        print("     Run -> Restart session → セル3を INSTALL_MODE='image' で実行し直してください。")
+        print("     Run -> Restart session → バナー 4/9 のインストールセルを INSTALL_MODE='image' で実行し直してください。")
     if "out of memory" in low or ("cuda" in low and "memory" in low):
         print("   ・GPU メモリ不足。まず Run -> Restart session（前回失敗した実行の残骸が GPU に残って")
         print("     いるため、そのまま再実行すると必ず同じ場所で落ちます）。")
-        print("   ・そのうえでセル1の SECONDS を 60 などに短くし、ODE_STEPS を下げてください。")
+        print("   ・そのうえでセル2の SECONDS を 60 などに短くし、ODE_STEPS を下げてください。")
         print("   ・原因を数字で確認したいときは、上の「診断」セルを実行してください。")
     if "resolve host" in low or "connection" in low or "internet" in low:
         print("   ・外部通信に失敗。Settings -> Internet が [On] か確認してください。")
@@ -562,7 +562,7 @@ if audio_path.is_file():
                          indent=1, ensure_ascii=False))
     mark("9/9 結果", True, f"{result['audio_seconds']:.0f} 秒の音声")
 else:
-    print("まだ音声がありません。セル7を実行してください（再実行で続きから再開します）。")
+    print("まだ音声がありません。バナー 8/9 の生成セルを実行してください（再実行で続きから再開します）。")
     mark("9/9 結果", False, "audio.flac がまだありません")
 '''
 

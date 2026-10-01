@@ -3,6 +3,11 @@
 `m-a-p/YuE2-3B` + `YuE2-Vae` を、Kaggle の無料アクセラレータ（P100 16 GB / T4 x2 16 GB×2）で
 動かすためのノートブックとドライバです。上流の `yue2` パッケージは**一切改造せず**、そのまま呼び出します。
 
+**このノートの主旨**: 立派な 1 曲を作ることではなく、**「歌詞とスタイルを与えれば、無料の GPU でも
+“曲が生成できる”」という問いを、誰でも自分の手で確かめられるようにすること**です。
+生成された曲より、生成された **`score.abc`（譜面）が読める・直せる**という事実のほうが面白い——
+その入口として使ってください。記事用の下書きは [`ARTICLE_ja.md`](ARTICLE_ja.md) にあります。
+
 ## 結論（先に要点）
 
 | 項目 | 判定 |
@@ -23,7 +28,8 @@
 | ファイル | 役割 |
 |---|---|
 | **[`STEPS_ja.md`](STEPS_ja.md)** | **Kaggle を開くところからの手順書（最初はこれ）** |
-| `YuE2_Kaggle.ipynb` | Kaggle に取り込むノートブック。各セルが ✅/❌ の判定を出し、セル1は STYLE/歌詞の日本語メモを表示 |
+| [`ARTICLE_ja.md`](ARTICLE_ja.md) | 記事用の下書き（主旨・手順・限界・つまずき） |
+| `YuE2_Kaggle.ipynb` | Kaggle に取り込むノートブック。セル1=曲のアイディア（STYLE/歌詞＋プリセット）、セル2=生成の設定、各セルが ✅/❌ の判定を表示 |
 | `yue2_kaggle.py` | ノートに埋め込まれるドライバ。CLI として単体でも使えます |
 | `build_notebook.py` | `yue2_kaggle.py` をノートブックへ埋め込むビルダー（ドライバを編集したら `python kaggle/build_notebook.py`） |
 | `test_yue2_kaggle_logic.py` | torch 不要のロジックテスト（`python kaggle/test_yue2_kaggle_logic.py`） |
@@ -32,7 +38,7 @@
 
 1. Kaggle → **Code → New Notebook → File → Import Notebook** で `YuE2_Kaggle.ipynb` を取り込む
 2. 右上 **Settings**: **Accelerator = GPU T4 x2**、**Internet = On**
-3. 「設定」セルの `STYLE` / `LYRICS` / `SECONDS` などを編集
+3. セル1（曲のアイディア）に `STYLE` / `LYRICS` を、セル2（生成の設定）に `SECONDS` / `ODE_STEPS` を書く（プリセット: `use_preset("citypop_ja")` など）
 4. **Save & Run All (Commit)** を推奨（最大 12 時間、ブラウザを閉じても継続）。対話実行は 20 分無操作で停止します
 5. 出力は `/kaggle/working/outputs/<id>/`（`audio.flac` ほか）。Output タブからダウンロード
 
@@ -110,7 +116,7 @@ NAR は元のチャンク単位でファイルに保存するため、長い曲�
   から自動検出して再利用できます。
 - vLLM バックエンド（`--backend vllm`）は AR 段の高速化が期待できますが、Kaggle のイメージに
   `vllm==0.19.0` を入れる必要があり、Turing では非対応・低速な場合があります。既定では使いません。
-- インストールはセル1の `INSTALL_MODE` で選びます。既定の **`"image"`** は Kaggle 同梱の
+- インストールはセル2（生成の設定）の `INSTALL_MODE` で選びます。既定の **`"image"`** は Kaggle 同梱の
   **numpy / torch をそのまま維持**し、yue2 本体（`--no-deps`）と依存（`transformers==4.57.6` 等）だけを
   入れます。**`"pinned"`** は上流の完全ピン留め（`numpy==2.2.6`）ですが、numpy を下げるため
   **イメージ同梱の scipy / scikit-learn と不整合になりえます**（症状: `ImportError: cannot import name
@@ -119,7 +125,11 @@ NAR は元のチャンク単位でファイルに保存するため、長い曲�
 ## 検証状況
 
 - ローカル（CPU / stub）で、**実物の `yue2` データクラスと `verify_result` 検証**に対して、
-  4 段の実行・成果物生成・段単位の再開・チャンク単位の再開・ベンチ/ETA の配線を確認済み
-  （`test_yue2_kaggle_logic.py` は依存なしで実行可能）。
+  4 段の実行・成果物生成・段単位の再開・チャンク単位の再開・ベンチ/ETA の配線を確認済み。
+  `kaggle/test_yue2_kaggle_logic.py` は torch 不要で 26 項目を検証します
+  （ノートの各セルが単体で動くこと、プリセット、自動採番、VRAM からの設定算出、
+  compute capability によるバックエンド選択、その場でのダウングレード、KV キャッシュ見積もり等）。
+- Kaggle T4 x2 の実機で、プリフライト → 実測ベンチ → **60 秒の曲の生成成功**までを確認済み
+  （`torch-eager` 経路。失敗したのは環境要因 3 件で、いずれもノート側で自動検出・案内するようにした）。
 - GPU 実機（Kaggle T4 / P100）での速度測定は、このノートの実測ベンチがそのまま行います。
   **T4 での実測値は未取得**なので、上の「10〜30 倍」は 4090 の計測値からの見積もりです。

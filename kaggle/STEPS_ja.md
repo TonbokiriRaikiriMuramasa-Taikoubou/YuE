@@ -48,7 +48,7 @@
 > ⚠️ **Import したノートは Internet が既定で Off です。**
 > これを On にしないと `git clone` が
 > `fatal: unable to access 'https://github.com/...': Could not resolve host: github.com`
-> で失敗します（セル2の接続チェックでも NG と出ます）。
+> で失敗します（バナー 3/9 の接続チェックでも NG と出ます）。
 > On に切り替えた直後にまだ失敗するときは **Run → Restart session** してから、
 > 上から順に実行し直してください。
 
@@ -59,7 +59,7 @@
 Jupyter の操作は **Shift + Enter** で 1 セル実行して次へ進みます。
 
 **各セルの最後に `✅ [n/9 ...] OK` か `❌ [n/9 ...] NG` の判定が出ます。**
-セル1〜6 がすべて ✅ なら、生成（バナー 8/9）を始めて大丈夫です。
+バナー 1/9〜6/9（セル1〜6）がすべて ✅ なら、生成（バナー 8/9）を始めて大丈夫です。
 
 | バナー | セル | やること | 目安 |
 |---|---|---|---|
@@ -122,7 +122,7 @@ PLAN_MAX_TOKENS = None  # セル2: 公式上限 4096
 | 日本語で歌わせる | `STYLE` の先頭を `"Japanese"` にして、`LYRICS` に日本語をそのまま書く |
 | 短時間でたくさん聴き比べる | セル2の `QUICK_PREVIEW = True`（60秒 / `ODE_STEPS=8` / 譜面 512 トークン） |
 | 当たりを引いたら本番 | `QUICK_PREVIEW = False` に戻して再実行（出力フォルダは自動で別になります） |
-| 同じ曲の長い版が欲しい | 歌詞・`STYLE`・`SEED`・`ODE_STEPS` はそのまま、`SECONDS` だけ伸ばして再実行 |
+| 同じ曲の長い版が欲しい | セル2で、歌詞・`STYLE`・`SEED`・`ODE_STEPS` はそのまま、`SECONDS` だけ伸ばして再実行 |
 | 別テイクが欲しい | `SEED` を変える（同じシードでも T4 では完全な再現は保証されません） |
 
 推奨の進め方:
@@ -130,7 +130,7 @@ PLAN_MAX_TOKENS = None  # セル2: 公式上限 4096
 1. **当たりを探す**: `QUICK_PREVIEW = True`（60 秒・8 ステップ）。T4 でも数分〜十数分で 1 曲聴けます
 2. **当たりを伸ばす**: `QUICK_PREVIEW = False` にして `ODE_STEPS = 32`、`SECONDS = 120〜180`
 3. 生成時間は **flow matching が支配的**で、`曲の長さ × ODE_STEPS` にほぼ比例します
-   （8 → 32 で約 4 倍）。セル9のベンチが最初に実測 ETA を出します
+   （8 → 32 で約 4 倍）。バナー 8/9 の生成セルが、最初にベンチを取って実測 ETA を出します
 
 ## 4. 長い曲を回す（Commit 実行）
 
@@ -169,13 +169,13 @@ from IPython.display import FileLink; FileLink(f"{OUTDIR}/audio.mp3")
 | 症状 | 原因 / 対処 |
 |---|---|
 | Accelerator に GPU の選択肢が無い | 電話番号認証が未完了（§0-2） |
-| `Could not resolve host: github.com` / `pip` が落ちる / モデルが落ちてこない | **Settings の Internet が Off**。Import したノートは既定で Off です。**On** に変更 → 直らない場合は **Run → Restart session** → 上から実行。セル2の接続チェックで OK を確認できます |
-| `ImportError: cannot import name '_center' from 'numpy._core.umath'` （または `numpy` / `scipy` / `sklearn` の ImportError） | pip が **numpy を差し替えた**ため、イメージ同梱の scipy / scikit-learn と不整合になった。**Run → Restart session** して、`INSTALL_MODE="image"`（現在の既定）で上から実行し直す。セル3末尾の整合性チェックが同じ判定をしてくれます |
+| `Could not resolve host: github.com` / `pip` が落ちる / モデルが落ちてこない | **Settings の Internet が Off**。Import したノートは既定で Off です。**On** に変更 → 直らない場合は **Run → Restart session** → 上から実行。バナー 3/9 の接続チェックで OK を確認できます |
+| `ImportError: cannot import name '_center' from 'numpy._core.umath'` （または `numpy` / `scipy` / `sklearn` の ImportError） | pip が **numpy を差し替えた**ため、イメージ同梱の scipy / scikit-learn と不整合になった。**Run → Restart session** して、`INSTALL_MODE="image"`（現在の既定）で上から実行し直す。バナー 4/9 の末尾の整合性チェックが同じ判定をしてくれます |
 | 起動時に BF16 エラー | **P100 を引いた**。Settings で T4 x2 に変更 → カーネル再起動 |
 | 途中で止まった（20 分放置） | 対話実行の制限。**Commit 実行**に切り替える |
 | 同じ設定で再実行したら一瞬で終わった | 前回の続きから再開した正常動作。`already-complete` と出ます |
 | `❌ [8/9 生成] NG` が出た | その下に原因候補と対処が日本語で出ます。分からなければ **出力の最後の20行**をコピーして相談 |
-| カーネルが古いままかも？ | セル4が出す `build` の値を確認。ノートを取り込み直したのに値が古いときは、ドライバのセル（`%%writefile`）を再実行 |
+| カーネルが古いままかも？ | バナー 5/9 が出す `build` の値を確認。ノートを取り込み直したのに値が古いときは、ドライバのセル（`%%writefile`）を再実行 |
 | GPU クォータが足りない | 右のアカウント表示で残り時間を確認（週 30 時間） |
 | CUDA out of memory | **順番が大事**（下の「OOM が出たら」を参照）。まず **Run → Restart session** |
 | `FlashAttention only supports Ampere GPUs or newer.` | **T4 では正常な動作です。** ノートは最初から / あるいは自動で `torch-eager` に切り替えます（ログに 1 行）。遅いが正しく動きます |
@@ -211,7 +211,7 @@ Jupyter は最後のトレースバック（エラーの中身）を保持し続
 モデルのテンソルが GPU に残ったままになります。そのまま再実行すると、同じ場所で必ず落ちます。
 
 1. **Run → Restart session**（最優先。これをせず再実行しても直りません）
-2. セル1で `SECONDS` を短くする（例: 60〜120）。必要なら `ODE_STEPS` も下げる
+2. セル2で `SECONDS` を短くする（例: 60〜120）。必要なら `ODE_STEPS` も下げる
 3. 「診断」セルを実行して、数字を確認する
 
 ```
@@ -219,11 +219,11 @@ GPU メモリ:
   before             allocated= 0.00 GiB reserved= 0.00 GiB free=14.6/14.6 GiB   ← まっさら
 パラメータ: 6.76 GiB, dtype: torch.bfloat16                                      ← 正常（bf16）
   after model load   allocated= 6.78 GiB ...
-✅ [診断] OK — モデル 6.8 GiB / 残骸 0.0 GiB
+✅ [7/9 診断] OK — モデル 6.8 GiB / 残骸 0.0 GiB
 ```
 
 - `before` が **1 GiB 以上**なら残骸あり → Restart session
-- パラメータが **13.5 GiB 前後**（fp32）なら環境異常 → セル5の `runtime:` 行と一緒に相談
+- パラメータが **13.5 GiB 前後**（fp32）なら環境異常 → バナー 6/9 の `runtime:` 行と一緒に相談
 - 長時間の本番は **Save & Run All (Commit)** がおすすめです。毎回まっさらなカーネルで走るので
   この残骸問題が起きません
 
@@ -234,14 +234,16 @@ GPU メモリ:
 ```
 --- estimated cost on this device ------------------------------------
   requested audio : 120s -> 3000 latent frames (25 fps), 1 flow-matching chunk(s)
-  plan           : 9.0 min (assumes 2400 score tokens at ...; release cap 4096)
-  semantic       : 4.0 min
-  flow_matching  : 62.0 min (32 midpoint steps = 64 velocity evals)
+  semantic KV     : 0.34 GiB (157 prefix + 3064 tokens)
+  plan           : 5.0 min (assumes 2400 score tokens at 8.0 tok/s; release cap 4096)
+  semantic       : 4.2 min
+  flow_matching  : 64.5 min (32 midpoint steps = 64 velocity evals)
   decode         : 12s
-  total          : 1.25 h
+  total          : 73.9 min
   deadline        : 9.83 h usable of 600 min  -> fits: True
 ---------------------------------------------------------------------
 ```
+（数値は例です。ベンチの実測値と、`SECONDS` / `ODE_STEPS` / `COT` の設定で変わります）
 
 - **flow_matching が支配項**です（32 ステップ = 64 回の速度評価 × 曲の長さ）。曲を半分にすれば半分、`ODE_STEPS` を 8 にすれば 1/4 になります
 - T4 は BF16 がエミュレーションなので、RTX 4090 の 10〜30 倍程度かかると見込んでください
@@ -252,7 +254,7 @@ GPU メモリ:
 ## 8. 2 回目以降を楽にするコツ
 
 - **モデルの再ダウンロード（約 7.8 GB）を避ける**
-  1. セル 1 で `PERSIST_MODEL = True` にして実行
+  1. セル2（生成の設定）で `PERSIST_MODEL = True` にして実行
   2. セッション終了後、Output の `hf-cache` フォルダを **Private な Kaggle Dataset** として保存
   3. 次回はその Dataset を **Add Data** で添付するだけで、ドライバが `/kaggle/input` から自動検出して再利用します
 - **歌詞やスタイルを変えたら `OUTPUT_ID` も変える**（同じ ID は前回の続きと見なされます）

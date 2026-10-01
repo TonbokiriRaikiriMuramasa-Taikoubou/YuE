@@ -325,6 +325,12 @@ def verdict(report: dict) -> dict:
     if report.get("bf16_native") is False:
         warnings.append("BF16 is emulated on this GPU (no native bf16 tensor cores): results are "
                         "correct, but expect several times the runtime of an Ampere-or-newer card.")
+    weights_gib = (MOT_WEIGHT_BYTES + VAE_WEIGHT_BYTES) / 2**30
+    if device["memory_gib"] < weights_gib + 3.0:
+        checks.append(f"FAIL: {device['memory_gib']:.1f} GiB VRAM is below the ~{weights_gib:.1f} GiB of "
+                      "unquantized weights plus working memory. A 16 GB card (T4) is the minimum "
+                      "for this preset; fp8 would need compute capability 8.9 or newer.")
+        return {"ok": False, "checks": checks, "warnings": warnings}
     if device["memory_gib"] < 15.0:
         warnings.append(f"{device['memory_gib']:.1f} GiB VRAM: keep songs short; offload_ar stays on.")
     if device["free_gib"] < device["memory_gib"] - 1.0:
@@ -797,6 +803,15 @@ def predict(measured: dict, options: Options, *, plan=None, abc_tokens: int | No
                                + frames * per_frame * 2 * ode_steps)
     stages["decode"] = measured.get("vae_seconds_per_frame", 0.0) * frames
 
+    # The semantic decoder preallocates its KV cache as prefix + max_tokens, and
+    # CFG (cot='off', guidance != 1) runs two branches.
+    semantic_tokens = int(options.semantic_sampling()["max_tokens"])
+    branches = 2 if options.cot == "off" else 1
+    stages["prefix_tokens"] = int(prefix_tokens)
+    stages["semantic_tokens"] = semantic_tokens
+    stages["cfg_branches"] = branches
+    stages["kv_cache_gib"] = (prefix_tokens + semantic_tokens) * KV_BYTES_PER_TOKEN * branches / 2**30
+
     parts = [stages[key] for key in ("plan", "semantic", "flow_matching", "decode")]
     stages["total"] = sum(parts) if all(isinstance(v, float) for v in parts) else None
     usable = max(0.0, (options.budget_minutes - options.safety_minutes) * 60)
@@ -809,6 +824,10 @@ def print_estimate(stages: dict, options: Options) -> None:
     print("--- estimated cost on this device ------------------------------------")
     print(f"  requested audio : {stages['audio_seconds']:.0f}s -> {stages['frames']} latent frames "
           f"(25 fps), {stages['chunks']} flow-matching chunk(s)")
+    if stages.get("kv_cache_gib"):
+        print(f"  semantic KV     : {stages['kv_cache_gib']:.2f} GiB "
+              f"({stages['prefix_tokens']} prefix + {stages['semantic_tokens']} tokens"
+              + (f", {stages['cfg_branches']} CFG branches)" if stages.get("cfg_branches", 1) > 1 else ")"))
     for key in ("plan", "semantic", "flow_matching", "decode", "total"):
         note = ""
         if key == "plan" and options.cot != "off" and options.abc is None:
@@ -1100,6 +1119,8 @@ def main(argv=None) -> int:
     run_cmd = sub.add_parser("run", help="staged, resumable song generation")
     _add_common(run_cmd)
     run_cmd.add_argument("--skip-bench", action="store_true")
+    parser.add_argument("--version", action="version",
+                        version=f"yue2_kaggle {DRIVER_BUILD} (min VRAM {(MOT_WEIGHT_BYTES + VAE_WEIGHT_BYTES) / 2**30:.1f} GiB)")
     args = parser.parse_args(argv)
 
     try:

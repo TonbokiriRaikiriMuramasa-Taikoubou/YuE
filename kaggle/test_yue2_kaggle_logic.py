@@ -96,6 +96,48 @@ def test_predict_skips_planning_when_a_score_is_given():
     assert planned["plan"] > 0 and planned["plan_tokens_assumed"] <= 4096
 
 
+def test_kv_cache_estimate_is_reported_and_grows_with_length():
+    measured = _rates()
+    short = yk.predict(measured, yk.Options(seconds=60))
+    long = yk.predict(measured, yk.Options(seconds=240))
+    for stages in (short, long):
+        expected = ((stages["prefix_tokens"] + stages["semantic_tokens"])
+                    * yk.KV_BYTES_PER_TOKEN / 2**30)
+        assert abs(stages["kv_cache_gib"] - expected) < 1e-9
+        assert stages["kv_cache_gib"] < 1.5, "a 16 GB card must stay well inside the KV budget"
+    assert long["kv_cache_gib"] > short["kv_cache_gib"]
+    assert short["cfg_branches"] == 1
+    # cot='off' runs two CFG branches, which doubles the cache
+    cfg = yk.predict(measured, yk.Options(seconds=60, cot="off"))
+    assert cfg["cfg_branches"] == 2
+    assert cfg["kv_cache_gib"] > short["kv_cache_gib"]
+
+
+def test_verdict_rejects_a_card_below_the_weight_footprint():
+    tiny = yk.verdict({"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
+                       "bf16_supported": True, "bf16_native": True, "ram_gib": 16,
+                       "internet": {"huggingface.co": True},
+                       "devices": [{"name": "NVIDIA GeForce GTX 1080", "memory_gib": 8.0,
+                                    "free_gib": 8.0, "compute_capability": [6, 1]}],
+                       "disk": {}})
+    assert tiny["ok"] is False
+    assert any("below the" in line and "weights" in line for line in tiny["checks"])
+
+
+def test_cli_exposes_the_build_and_exits_cleanly():
+    import contextlib
+    import io
+
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            yk.main(["--version"])
+        except SystemExit as exc:
+            assert exc.code == 0
+    assert yk.DRIVER_BUILD in output.getvalue()
+    assert "VRAM" in output.getvalue()
+
+
 def test_budget_gate():
     measured = _rates()
     options = yk.Options(seconds=180, ode_steps=32, budget_minutes=30, safety_minutes=5)
