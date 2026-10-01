@@ -180,6 +180,95 @@ def test_verdict_needs_network_or_a_local_model():
     assert online["ok"] is True and not online["warnings"]
 
 
+def _notebook_cells(kind="code"):
+    import json
+    notebook = json.loads((Path(__file__).parent / "YuE2_Kaggle.ipynb").read_text(encoding="utf-8"))
+    return ["".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == kind]
+
+
+def test_notebook_cells_are_valid_python():
+    import compileall  # noqa: F401 - documentation only
+    checked = 0
+    for index, source in enumerate(_notebook_cells()):
+        if any(line.startswith("!") or line.startswith("%") for line in source.splitlines()):
+            continue                                    # IPython magics: not plain Python
+        compile(source, f"notebook-cell-{index}", "exec")
+        checked += 1
+    assert checked >= 6
+
+
+def test_notebook_config_cell_shows_a_japanese_memo():
+    """Cell 1 must run before anything is installed and explain STYLE/LYRICS."""
+    import contextlib
+    import io
+
+    source = next(src for src in _notebook_cells() if "STYLE = (" in src)
+    namespace = {"__name__": "config_cell"}
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(compile(source, "config_cell", "exec"), namespace)
+    text = output.getvalue()
+    assert "✅ [1/8 設定] OK" in text, text
+    assert "ネオンが路地に消えていく" in text            # default lyrics translation
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert namespace["mark"]("probe", False, "x") is False
+
+    describe = namespace["describe_style"]
+    translated = describe("English, warm piano pop, expressive female voice, 88 BPM")
+    assert "英語" in translated and "温かいピアノポップス" in translated
+    assert "表現力豊かな女性ボーカル" in translated and "88 BPM" in translated
+    # Japanese input passes through, and unknown English words are kept
+    assert describe("Japanese, city pop, ドラム") == "日本語 / シティポップス / ドラム"
+    assert "conductor" in describe("orchestral, conductor")
+
+
+def test_notebook_embeds_the_driver_verbatim():
+    source = next(src for src in _notebook_cells() if src.startswith("%%writefile"))
+    embedded = source.split("\n", 1)[1]
+    driver = (Path(__file__).parent / "yue2_kaggle.py").read_text(encoding="utf-8")
+    assert embedded.rstrip("\n") == driver.rstrip("\n")
+    assert yk.DRIVER_BUILD in embedded
+
+
+def test_run_with_retry_retries_a_graph_refusal_but_not_a_real_error():
+    seen = []
+
+    class Handle:
+        pipe = "rebuilt"
+
+        def retry_eager(self, exc):
+            seen.append(type(exc).__name__)
+            return True
+
+    for error in (ValueError("FlashAttention only supports Ampere GPUs"),
+                  RuntimeError("cuDNN attention is unavailable")):
+        calls = {"n": 0}
+
+        def stage(pipe, error=error, calls=calls):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise error
+            return "recovered"
+
+        assert yk.run_with_retry(Handle(), stage) == "recovered"
+    assert seen == ["ValueError", "RuntimeError"]
+
+    class Stubborn(Handle):
+        def retry_eager(self, exc):
+            return False
+
+    for error in (RuntimeError("CUDA out of memory"), ValueError("bad request")):
+        def stage(pipe, error=error):
+            raise error
+
+        try:
+            yk.run_with_retry(Stubborn(), stage)
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"{error!r} must not be swallowed")
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):

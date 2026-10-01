@@ -61,16 +61,28 @@ GPU は週 30 時間まで、`/kaggle/working` は 20 GB まで保存されま�
 
 CONFIG_CELL = '''
 # ============================ 設定（ここだけ編集） ============================
-STYLE = (
-    "English, warm piano pop, expressive female voice, acoustic piano, "
-    "rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM"
-)
-LYRICS = """[Verse]
+# STYLE  : 「言語, ジャンル, ボーカル, 楽器, 雰囲気, テンポ」をカンマ区切りで。
+#          日本語で歌わせたいときは先頭を "Japanese" に（日本語の歌詞をそのまま書けます）
+# LYRICS : [Verse] / [Chorus] などのタグで区切り、1行7音節くらいが歌いやすい長さです
+import os, re, sys
+from pathlib import Path
+
+_DEFAULT_LYRICS = """[Verse]
 Neon fades along the lane
 Footsteps keep the time of rain
 [Chorus]
 Let the day come into view
 Every road begins with you"""
+
+# 既定の歌詞の日本語訳（自分で書き換えたときは、この訳は無視してください）
+_DEFAULT_LYRICS_JA = """[Verse]  ネオンが路地に消えていく／足音は雨の刻みを打つ
+[Chorus] 夜明けを迎えに行こう／どの道も君から始まる"""
+
+STYLE = (
+    "English, warm piano pop, expressive female voice, acoustic piano, "
+    "rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM"
+)
+LYRICS = _DEFAULT_LYRICS
 
 COT = "full"            # full（メロディ+コード譜を自動生成）/ melody / off（譜面なし）
 SECONDS = 120.0         # 生成する長さ（秒）。まずは 60〜120 秒で試すのがおすすめ
@@ -95,25 +107,92 @@ PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/workin
 REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"  # 自分の fork に差し替えてもOK
 REPO_REF = "main"       # fork の branch 名（例: "arena/01a0f78a-yue"）
 
-import os
-from pathlib import Path
-
 WORKDIR = Path("/kaggle/working") if Path("/kaggle").exists() else Path.cwd()
 REPO_DIR = WORKDIR / "YuE"
 OUTDIR = WORKDIR / "outputs" / OUTPUT_ID
 if PERSIST_MODEL:
     os.environ["HF_HOME"] = str(WORKDIR / "hf-cache")
+
+# ---------------- ここから下は表示用（編集しなくてOK） ----------------
+_JA_TERMS = {
+    "english": "英語", "japanese": "日本語", "chinese": "中国語", "korean": "韓国語",
+    "spanish": "スペイン語", "french": "フランス語", "german": "ドイツ語",
+    "acoustic": "アコースティック", "electric": "エレクトリック", "indie": "インディー",
+    "pop": "ポップス", "rock": "ロック", "jazz": "ジャズ", "folk": "フォーク",
+    "ballad": "バラード", "edm": "EDM", "techno": "テクノ", "lofi": "ローファイ",
+    "hiphop": "ヒップホップ", "city": "シティ", "soul": "ソウル", "funk": "ファンク",
+    "disco": "ディスコ", "ambient": "アンビエント", "orchestral": "オーケストラ",
+    "anime": "アニメ調", "piano": "ピアノ", "guitar": "ギター", "bass": "ベース",
+    "drums": "ドラム", "strings": "ストリングス", "violin": "バイオリン",
+    "saxophone": "サックス", "synth": "シンセ", "rhodes": "ローズ", "organ": "オルガン",
+    "flute": "フルート", "female": "女性", "male": "男性", "voice": "ボーカル",
+    "vocal": "ボーカル", "expressive": "表現力豊かな", "soft": "柔らかな",
+    "powerful": "力強い", "whisper": "ささやくような", "duet": "デュエット",
+    "choir": "合唱", "warm": "温かい", "bright": "明るい", "sad": "切ない",
+    "nostalgic": "郷愁のある", "energetic": "エネルギッシュ", "calm": "静かな",
+    "dreamy": "夢見心地", "melancholic": "憂いのある", "uplifting": "高揚感のある",
+    "cozy": "居心地のよい", "lyrical": "歌詞が伝わる", "memorable": "覚えやすい",
+    "melody": "メロディ", "unhurried": "急がない", "phrasing": "歌い回し",
+    "rounded": "丸みのある", "light": "軽快な", "steady": "安定した", "groove": "グルーヴ",
+    "atmospheric": "雰囲気のある", "epic": "壮大な", "gentle": "優しい", "dark": "暗めの",
+    "happy": "楽しい", "bpm": "BPM", "and": "と", "with": "と",
+}
+
+def mark(label, passed=True, note=""):
+    """各セルの結果を ✅ / ❌ の 1 行で表示します。"""
+    print(("✅" if passed else "❌") + f" [{label}] " + ("OK" if passed else "NG")
+          + (f" — {note}" if note else ""))
+    return passed
+
+def describe_style(style):
+    """STYLE を日本語メモに変換（辞書にある単語だけ訳し、残りはそのまま）"""
+    parts = []
+    for raw in style.split(","):
+        words = raw.strip().replace("/", " ").split()
+        if not words:
+            continue
+        text = " ".join(_JA_TERMS.get(w.lower().strip("."), w) for w in words)
+        for _ in range(3):   # 漢字・かな・カタカナの間の空白を詰める
+            text = re.sub(r"([ぁ-んァ-ヶ一-龥]) ([ぁ-んァ-ヶ一-龥])",
+                          lambda m: m.group(1) + m.group(2), text)
+        parts.append(text.strip())
+    return " / ".join(parts)
+
+print("🎼 この設定で作られる曲（STYLE の日本語メモ）")
+print("   ", describe_style(STYLE))
+bpm = re.findall(r"(\d+)\s*bpm", STYLE, flags=re.I)
+if bpm:
+    print("   テンポ:", " / ".join(f"{b} BPM" for b in bpm))
+lines = [l for l in LYRICS.splitlines() if l.strip() and not l.strip().startswith("[")]
+sections = re.findall(r"\[([^\]]+)\]", LYRICS)
+print(f"🎤 歌詞: {len(lines)} 行 / セクション {sections if sections else '(タグなし)'}")
+if LYRICS.strip() == _DEFAULT_LYRICS.strip():
+    print("   日本語訳（既定の歌詞）:")
+    for line in _DEFAULT_LYRICS_JA.splitlines():
+        print("     " + line)
+else:
+    print("   （歌詞は編集済み。意味の訳はここには出ません）")
+print(f"⏱ 長さ {SECONDS:.0f} 秒 / 譜面 cot={COT} / 乱数シード {SEED} / 出力 {OUTDIR}")
 print("output directory:", OUTDIR)
+mark("1/8 設定", True, f"{OUTPUT_ID}: {SECONDS:.0f} 秒, cot={COT}")
+
+# 以下は変更不要です（保存場所の計算）
+if PERSIST_MODEL:
+    print("HF キャッシュ:", os.environ["HF_HOME"])
+if not (REPO_DIR / "pyproject.toml").is_file():
+    print("リポジトリ未取得: セル3で git clone します")
+else:
+    print("リポジトリ:", REPO_DIR)
 '''
 
 GPU_CELL = '''
 # --- まず torch 抜きで確認: GPU の種類とインターネット接続 ---
-!nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
-!python -c "import sys; print('python', sys.version.split()[0])"
-!df -h /kaggle/working | tail -1
+import subprocess, socket
 
-# インターネット: git clone / pip / モデル(約7.8GB)のDL に必須です
-import socket
+raw = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,compute_cap",
+                      "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
+print(raw if raw else "(nvidia-smi の出力なし = GPU が見えていません)")
+print("python", sys.version.split()[0])
 
 def reachable(host, timeout=5):
     try:
@@ -124,13 +203,18 @@ def reachable(host, timeout=5):
         return False
 
 INTERNET = all([reachable("github.com"), reachable("pypi.org"), reachable("huggingface.co")])
-if INTERNET:
-    print("internet: OK (github / pypi / huggingface に到達できます)")
-else:
+names = [line.split(",")[0].strip() for line in raw.splitlines() if line.strip()]
+is_p100 = any("P100" in name for name in names)
+if not INTERNET:
     print()
     print(">>> インターネットに接続できていません。右の Settings で Internet を [On] にしてください。")
-    print(">>> On にしても直らないときは Run -> Restart session してから、上から順に実行し直します。")
-    print(">>> 電話番号認証が未完了だと Internet も GPU も選べません（Settings -> Phone Verification）。")
+    print(">>> On にしても直らないときは Run -> Restart session してから、上から順に実行します。")
+if is_p100:
+    print()
+    print(">>> P100 は BF16 非対応で YuE2 は動きません。Settings で Accelerator を GPU T4 x2 に変更し、")
+    print(">>> Run -> Restart session してから、もう一度このセルを実行してください。")
+mark("2/8 GPU・インターネット", bool(names) and INTERNET and not is_p100,
+     f"{names[0] if names else 'GPU なし'} / Internet {'OK' if INTERNET else 'NG'}")
 '''
 
 
@@ -184,6 +268,7 @@ try:
         elif not str(torch_version).startswith("2.10"):
             print(f"note: image torch is {torch_version}; 上流のピンは 2.10.0 です（そのまま使います）")
 except subprocess.CalledProcessError as exc:
+    mark("3/8 インストール", False, "git / pip が失敗しました")
     print("コマンドが失敗しました:", exc.cmd)
     print()
     print("確認すること:")
@@ -213,40 +298,49 @@ if broken:
     print()
     print(">>> Python 環境が不整合です（典型: numpy を差し替えて scipy / scikit-learn が壊れた）。")
     print(">>> 対処: Run -> Restart session してから、INSTALL_MODE='image' で上から実行し直します。")
+    mark("3/8 インストール", False, "Python 環境が不整合（numpy 差し替えの影響）")
     raise RuntimeError("inconsistent environment: " + " | ".join(broken))
 
 import torch
 print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
 if not torch.cuda.is_available():
     print(">>> GPU が見えていません。Settings -> Accelerator を GPU T4 x2 にして Restart session してください。")
+mark("3/8 インストール", torch.cuda.is_available(), f"torch {torch.__version__}")
 '''
 
 
 DRIVER_CELL_PREFIX = """%%writefile /kaggle/working/yue2_kaggle.py
 """
 
-IMPORT_CELL = """
-import sys
-sys.path.insert(0, "/kaggle/working")          # the %%writefile cell above
-sys.path.append(str(REPO_DIR / "kaggle"))      # offline/local fallback: use the repo copy
-import importlib, yue2_kaggle as yk
+IMPORT_CELL = '''
+# --- ドライバの読み込み（%%writefile で書いたファイルを使う） ---
+import importlib
+sys.path.insert(0, "/kaggle/working")          # 上の %%writefile セルが書いたファイル
+sys.path.append(str(REPO_DIR / "kaggle"))      # オフライン時はリポジトリ側を使う
+import yue2_kaggle as yk
 importlib.reload(yk)
+written = Path("/kaggle/working/yue2_kaggle.py")
 print("driver:", yk.__file__)
-"""
+print("build :", yk.DRIVER_BUILD)
+mark("4/8 ドライバ", written.is_file() and str(yk.__file__) == str(written), f"build {yk.DRIVER_BUILD}")
+'''
 
-PREFLIGHT_CELL = """
-# --- プリフライト: デバイス・VRAM・ディスク・BF16 判定（pipeline と同じ判定を使う） ---
+PREFLIGHT_CELL = '''
+# --- プリフライト: GPU・VRAM・ディスク・BF16・import 整合性・ネット接続 ---
 report = yk.environment()
 READY = yk.print_report(report)["ok"]
-
-if not READY:
-    print("\\n>>> この環境では実行できません。Settings で Accelerator を 'GPU T4 x2' に変えて再実行してください。")
-else:
+mark("5/8 プリフライト", READY, "実行可能" if READY else "上の ❌ の指示に従ってください")
+if READY:
     settings = yk.pipeline_settings(report)
-    print("recommended:", {k: round(v, 2) if isinstance(v, float) else v for k, v in settings.items()})
-"""
+    print("recommended:", {k: round(v, 2) if isinstance(v, float) else v
+                           for k, v in settings.items()})
+else:
+    print()
+    print(">>> この環境では実行できません。上の表示に従ってください。")
+    print(">>> P100 だった場合は Settings -> Accelerator -> GPU T4 x2 -> Run -> Restart session。")
+'''
 
-OPTIONS_CELL = """
+OPTIONS_CELL = '''
 # --- 実行オプションを組み立てる（設定セル＋環境から） ---
 
 # HF トークン（モデルが gated の場合は Kaggle Secrets に HF_TOKEN を登録）
@@ -262,42 +356,71 @@ opts = yk.Options(
     ode_steps=ODE_STEPS, abc=ABC, token=HF_TOKEN, plan_max_tokens=PLAN_MAX_TOKENS,
     budget_minutes=BUDGET_MINUTES, safety_minutes=SAFETY_MINUTES,
 )
+model_ref, vae_ref = yk.resolve_models(opts, report)
 print("曲の長さ:", opts.frames, "frames =", f"{opts.seconds:.0f}s",
       "| semantic max_tokens:", opts.semantic_sampling()["max_tokens"])
-print("モデル:", yk.resolve_models(opts, report))
+print("モデル:", model_ref)
+print("VAE   :", vae_ref)
 print("既存の出力:", sorted(p.name for p in OUTDIR.iterdir()) if OUTDIR.exists() else "(なし=新規)")
-"""
+mark("6/8 実行オプション", True, f"{opts.frames} frames / cot={COT}")
+'''
 
-RUN_CELL = """
+RUN_CELL = '''
 # --- ベンチ → ETA → 4段ステージ実行（途中で落ちても再実行で再開） ---
 if not READY:
-    raise RuntimeError("プリフライトに失敗しています。上のセルを確認してください。")
+    raise RuntimeError("プリフライトに失敗しています。セル5を確認してください。")
 
-with yk.open_pipeline(report, opts) as handle:
-    rates = None
-    if RUN_BENCHMARK:
-        rates = yk.measure(handle)
-        stages = yk.predict(rates, opts)
-        yk.print_estimate(stages, opts)
-        if not stages["fits_budget"] and not FORCE_RUN:
-            print("\\n>>> ETA が予算を超えています。SECONDS を下げる / ODE_STEPS を下げる / "
-                  "FORCE_RUN=True で強行、のいずれかを選んでください。")
-            outcome = {"status": "skipped", "reason": "estimate exceeds budget"}
+try:
+    with yk.open_pipeline(report, opts) as handle:
+        rates = None
+        if RUN_BENCHMARK:
+            rates = yk.measure(handle)
+            stages = yk.predict(rates, opts)
+            yk.print_estimate(stages, opts)
+            if not stages["fits_budget"] and not FORCE_RUN:
+                print()
+                print(">>> ETA が予算を超えています。SECONDS を下げる / ODE_STEPS を下げる /")
+                print(">>> FORCE_RUN=True で強行、のいずれかを選んでください。")
+                outcome = {"status": "skipped", "reason": "estimate exceeds budget"}
+            else:
+                outcome = yk.run(handle, opts, rates=rates)
         else:
-            outcome = yk.run(handle, opts, rates=rates)
+            outcome = yk.run(handle, opts)
+except Exception as exc:
+    text = f"{type(exc).__name__}: {exc}"
+    low = text.lower()
+    print()
+    print("❌ [7/8 生成] NG —", text[:400])
+    print("   考えられる原因と対処:")
+    if "_center" in low or "umath" in low or "_nocopy" in low:
+        print("   ・Python 環境が壊れています（pip が numpy を差し替えた影響）。")
+        print("     Run -> Restart session → セル3を INSTALL_MODE='image' で実行し直してください。")
+    if "out of memory" in low or ("cuda" in low and "memory" in low):
+        print("   ・GPU メモリ不足。セル1で SECONDS を 60 などに短くする、ODE_STEPS を下げる、")
+        print("     ノートを Run -> Restart session してから実行し直してください。")
+    if "resolve host" in low or "connection" in low or "internet" in low:
+        print("   ・外部通信に失敗。Settings -> Internet が [On] か確認してください。")
+    if "cuda" in low and "available" in low:
+        print("   ・GPU が見えていません。Settings -> Accelerator -> GPU T4 x2 -> Restart session。")
+    if "flash" in low or "ampere" in low or "cudnn" in low:
+        print("   ・GPU が最新の attention 経路に対応していない可能性。ログに 'retrying with")
+        print("     backend=torch-eager' が出ていれば自動で切り替わっています。")
+    print("   ・分からないときは、この出力の最後の20行をそのままコピーして相談してください。")
+    raise
+else:
+    status = outcome.get("status")
+    if status in ("complete", "already-complete"):
+        mark("7/8 生成", True, f"{outcome.get('outdir')}"
+                               + ("（前回の続きが完了済みでした）" if status != "complete" else ""))
+    elif status == "interrupted":
+        mark("7/8 生成", False, "時間切れで安全に停止しました。そのまま再実行で続きから再開します")
     else:
-        outcome = yk.run(handle, opts)
+        mark("7/8 生成", False, f"{status}: {outcome.get('reason', '')}")
+'''
 
-print(outcome.get("status"), "->", outcome.get("outdir"))
-if outcome.get("status") == "interrupted":
-    print("時間切れで安全に停止しました（完了した段は保存済み）。"
-          "そのまま再実行すると続きから再開します。")
-"""
-
-RESULT_CELL = """
+RESULT_CELL = '''
 # --- 結果の確認と試聴 ---
 import json
-from pathlib import Path
 from IPython.display import Audio, display
 
 audio_path = OUTDIR / "audio.flac"
@@ -308,17 +431,38 @@ if audio_path.is_file():
     print("files:", ", ".join(f"{p.name} ({p.stat().st_size/1e6:.1f} MB)"
                               for p in sorted(OUTDIR.iterdir())))
     display(Audio(filename=str(audio_path)))
-    print("\\n曲の構成(ABC 譜)を確認するには score.abc を開いてください:",
-          OUTDIR / "score.abc" if (OUTDIR / "score.abc").exists() else "(ABC なし: cot=off)")
+    score = OUTDIR / "score.abc"
+    print("譜面(ABC):", score if score.exists() else "(cot=off のため譜面なし)")
     run_state = OUTDIR / "kaggle_run.json"
     if run_state.is_file():
-        print(json.dumps(json.loads(run_state.read_text(encoding='utf-8')).get("stages", {}),
+        print(json.dumps(json.loads(run_state.read_text(encoding="utf-8")).get("stages", {}),
                          indent=1, ensure_ascii=False))
+    mark("8/8 結果", True, f"{result['audio_seconds']:.0f} 秒の音声")
 else:
-    print("まだ音声がありません。上の実行セルを走らせてください（再実行で続きから再開します）。")
-"""
+    print("まだ音声がありません。セル7を実行してください（再実行で続きから再開します）。")
+    mark("8/8 結果", False, "audio.flac がまだありません")
+'''
 
 TIPS = """
+## ✅ / ❌ の見方
+
+各セルの最後に 1 行の判定が出ます。**1〜6 がすべて ✅ なら、生成を始めて大丈夫**です。
+
+```
+✅ [1/8 設定] OK — song-01: 120 秒, cot=full
+...
+❌ [7/8 生成] NG — 原因の候補と対処が続けて表示されます
+```
+
+- 生成（7/8）は長いので、途中の経過は `[kaggle] ...` のログで確認します
+- ❌ が出たら、そのセルの下に書かれている対処に従ってください
+
+## セル1が出す「日本語メモ」
+
+セル1を実行すると、`STYLE` の意味（言語・ジャンル・ボーカル・楽器・雰囲気・BPM）と、
+歌詞の行数・セクション、既定の歌詞の日本語訳が表示されます。自分の歌詞に書き換えたときは
+訳は出ません（構成だけ表示）。英単語の辞書に載っている語は自動で日本語になります。
+
 ## 詰まりやすい点とコツ
 
 **時間の見積もり。** 公式リポジトリの資料やコミュニティ計測では、RTX 4090 で 3.6 分の曲に約 71 秒

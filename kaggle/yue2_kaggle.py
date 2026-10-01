@@ -51,6 +51,7 @@ from pathlib import Path
 # Release constants (checked against the repository's assets/release.json).
 # ---------------------------------------------------------------------------
 
+DRIVER_BUILD = "2026-10-01.3"        # shown by the notebook so a stale kernel is visible
 FRAME_SECONDS = 1920 / 48000          # YuE2-Vae downsampling_ratio 1920 @ 48 kHz -> 25 fps
 CONTEXT = 24576                       # YuE2 protocol context length
 KV_BYTES_PER_TOKEN = 2 * 28 * 8 * 128 * 2      # k+v * layers * kv_heads * head_dim * bf16
@@ -62,7 +63,7 @@ DEFAULT_VAE = "m-a-p/YuE2-Vae"
 # Runtime errors that mean "this GPU cannot use the CUDA-graph/flash fast path".
 GRAPH_FALLBACK_HINTS = (
     "flash", "flashattention", "sm_80", "ampere", "compute capability",
-    "cuda graph", "cudagraph",
+    "cuda graph", "cudagraph", "cudnn", "scaled_dot_product_attention",
 )
 
 DEFAULT_STYLE = (
@@ -336,6 +337,7 @@ def print_report(report: dict) -> dict:
         lines.append(f"  local model (dataset) : {report['local_model_dir']}")
     if report.get("local_vae_dir"):
         lines.append(f"  local VAE (dataset)   : {report['local_vae_dir']}")
+    lines.append(f"  driver build: {DRIVER_BUILD}")
     runtime = report.get("runtime_imports") or {}
     if runtime:
         summary = ", ".join(f"{name} {value}" for name, value in runtime.items())
@@ -499,7 +501,7 @@ def run_with_retry(handle: PipelineHandle, stage):
     """Run ``stage(pipe)``; if this GPU refuses the graph path, rebuild and retry once."""
     try:
         return stage(handle.pipe)
-    except (RuntimeError, NotImplementedError) as exc:
+    except (RuntimeError, NotImplementedError, ValueError) as exc:
         if not handle.retry_eager(exc):
             raise
         return stage(handle.pipe)
@@ -761,7 +763,8 @@ def run(handle: PipelineHandle, options: Options, *, rates: dict | None = None,
     deadline = time.time() + max(60.0, (options.budget_minutes - options.safety_minutes) * 60)
     cancelled = lambda: time.time() > deadline          # noqa: E731 - wall-clock guard
 
-    state: dict = {"options": options.to_dict(), "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+    state: dict = {"driver_build": DRIVER_BUILD, "options": options.to_dict(),
+                   "started": time.strftime("%Y-%m-%d %H:%M:%S"),
                    "budget_minutes": options.budget_minutes, "stages": {}}
     if state_path.is_file():
         try:
