@@ -141,6 +141,18 @@ def _ram_gib() -> float | None:
         return None
 
 
+def _reachable(host: str, timeout: float = 4.0) -> bool:
+    """TCP probe; a clone/pip failure saying 'Could not resolve host' usually
+    means the notebook's Internet switch is off, not a broken network."""
+    import socket
+
+    try:
+        socket.create_connection((host, 443), timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
 def _matmul_probe(torch, device, size=2048, repeats=3) -> dict:
     """Effective BF16/FP16/FP32 GEMM throughput; exposes emulated-BF16 penalties."""
     rates: dict = {}
@@ -208,6 +220,7 @@ def environment(probe: bool = True) -> dict:
                       "home cache (~/.cache)": _disk(Path.home()),
                       "root (/)": _disk(Path("/"))}
     report["local_model_dir"], report["local_vae_dir"] = find_local_models()
+    report["internet"] = {"huggingface.co": _reachable("huggingface.co")}
     return report
 
 
@@ -244,6 +257,14 @@ def verdict(report: dict) -> dict:
     if "free_gib" in working and working["free_gib"] < 12:
         warnings.append(f"/kaggle/working has {working['free_gib']:.0f} GiB free; the ~7.8 GB of "
                         "model files plus artifacts need room (Kaggle persists at most 20 GB).")
+    offline = (report.get("internet") or {}).get("huggingface.co") is False
+    if offline and not report.get("local_model_dir"):
+        checks.append("FAIL: huggingface.co is unreachable and no local model copy was found, so "
+                      "the weights cannot be downloaded. Turn Settings -> Internet on, or attach "
+                      "the models as a Kaggle dataset under /kaggle/input.")
+        return {"ok": False, "checks": checks, "warnings": warnings}
+    if offline:
+        warnings.append("huggingface.co is unreachable; using the local model copy instead.")
     return {"ok": True, "checks": checks, "warnings": warnings}
 
 
@@ -280,6 +301,10 @@ def print_report(report: dict) -> dict:
         lines.append(f"  local model (dataset) : {report['local_model_dir']}")
     if report.get("local_vae_dir"):
         lines.append(f"  local VAE (dataset)   : {report['local_vae_dir']}")
+    internet = report.get("internet")
+    if internet:
+        state = "OK" if internet.get("huggingface.co") else "NG (Settings -> Internet を On に)"
+        lines.append(f"  huggingface.co        : {state}")
     for line in result["warnings"]:
         lines.append(f"  WARNING: {line}")
     if result["ok"]:

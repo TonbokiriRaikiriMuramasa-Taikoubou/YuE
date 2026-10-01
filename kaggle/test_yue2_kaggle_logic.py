@@ -135,6 +135,22 @@ def test_verdict_shapes():
     assert t4["ok"] is True and any("emulated" in line for line in t4["warnings"])
 
 
+def test_verdict_needs_network_or_a_local_model():
+    base = {"cuda_available": True, "current_device": "cuda:0", "torch": "2.10.0",
+            "bf16_supported": True, "bf16_native": True, "ram_gib": 16,
+            "devices": [{"name": "Tesla T4", "memory_gib": 15.9, "free_gib": 15.9,
+                         "compute_capability": [7, 5]}],
+            "disk": {"working (/kaggle/working)": {"free_gib": 40, "path": "x"}}}
+    offline = yk.verdict({**base, "internet": {"huggingface.co": False}})
+    assert offline["ok"] is False and any("Internet" in line for line in offline["checks"])
+    with_local = yk.verdict({**base, "internet": {"huggingface.co": False},
+                             "local_model_dir": "/kaggle/input/yue2/YuE2-3B"})
+    assert with_local["ok"] is True
+    assert any("unreachable" in line for line in with_local["warnings"])
+    online = yk.verdict({**base, "internet": {"huggingface.co": True}})
+    assert online["ok"] is True and not online["warnings"]
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):

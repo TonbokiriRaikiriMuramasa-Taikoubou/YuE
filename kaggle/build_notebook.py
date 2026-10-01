@@ -90,8 +90,8 @@ FORCE_RUN = False       # ETA が予算を超えていても強行する
 
 INSTALL_MODE = "pinned" # "pinned": 公式ピン留め依存を入れる / "fast": Kaggle 同梱 torch を使う
 PERSIST_MODEL = False   # True にすると HF キャッシュを /kaggle/working に置く（後で Dataset 化しやすい）
-REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"
-REPO_REF = "main"
+REPO_URL = "https://github.com/multimodal-art-projection/YuE.git"  # 自分の fork に差し替えてもOK
+REPO_REF = "main"       # fork の branch 名（例: "arena/01a0f78a-yue"）
 
 import os
 from pathlib import Path
@@ -104,36 +104,73 @@ if PERSIST_MODEL:
 print("output directory:", OUTDIR)
 '''
 
-GPU_CELL = """
-# --- まず torch 抜きで GPU の種類を確認（P100 ならここで分かります） ---
+GPU_CELL = '''
+# --- まず torch 抜きで確認: GPU の種類とインターネット接続 ---
 !nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
 !python -c "import sys; print('python', sys.version.split()[0])"
 !df -h /kaggle/working | tail -1
-"""
 
-INSTALL_CELL = """
+# インターネット: git clone / pip / モデル(約7.8GB)のDL に必須です
+import socket
+
+def reachable(host, timeout=5):
+    try:
+        socket.create_connection((host, 443), timeout=timeout).close()
+        return True
+    except OSError as exc:
+        print(f"  {host}: NG ({exc})")
+        return False
+
+INTERNET = all([reachable("github.com"), reachable("pypi.org"), reachable("huggingface.co")])
+if INTERNET:
+    print("internet: OK (github / pypi / huggingface に到達できます)")
+else:
+    print()
+    print(">>> インターネットに接続できていません。右の Settings で Internet を [On] にしてください。")
+    print(">>> On にしても直らないときは Run -> Restart session してから、上から順に実行し直します。")
+    print(">>> 電話番号認証が未完了だと Internet も GPU も選べません（Settings -> Phone Verification）。")
+'''
+
+
+INSTALL_CELL = '''
 # --- リポジトリの取得と依存のインストール（初回 3〜8 分程度） ---
 import subprocess, sys, os
-
-if not (REPO_DIR / "pyproject.toml").is_file():
-    subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_REF, REPO_URL, str(REPO_DIR)],
-                   check=True)
 
 def pip(*args):
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", *args], check=True)
 
-if INSTALL_MODE == "pinned":
-    # 公式にピン留めされた torch==2.10.0 / transformers==4.57.6 等を入れる（再現重視）
-    pip(str(REPO_DIR))
+try:
+    if not (REPO_DIR / "pyproject.toml").is_file():
+        if not INTERNET:
+            raise RuntimeError("Internet が Off です（セル2の診断を参照）")
+        if REPO_DIR.exists() and not any(REPO_DIR.iterdir()):
+            REPO_DIR.rmdir()          # 失敗した clone の空ディレクトリが残っていたら片付ける
+        subprocess.run(["git", "clone", "--depth", "1", "--branch", REPO_REF, REPO_URL, str(REPO_DIR)],
+                       check=True)
+    if INSTALL_MODE == "pinned":
+        # 公式にピン留めされた torch==2.10.0 / transformers==4.57.6 等を入れる（再現重視）
+        pip(str(REPO_DIR))
+    else:
+        # Kaggle 同梱の CUDA 対応 torch をそのまま使い、軽い依存だけ入れる（速いが非公式）
+        pip("--no-deps", str(REPO_DIR))
+        pip("transformers==4.57.6", "huggingface-hub==0.36.2", "safetensors==0.7.0",
+            "tiktoken==0.12.0", "soundfile==0.13.1", "accelerate==1.13.0")
+except subprocess.CalledProcessError as exc:
+    print("コマンドが失敗しました:", exc.cmd)
+    print()
+    print("確認すること:")
+    print("  1) Settings -> Internet が [On] か（Off だと 'Could not resolve host' で失敗します）")
+    print("  2) Settings -> Accelerator が [GPU T4 x2] か（P100 では YuE2 は動きません）")
+    print("  3) 一時的なネットワーク障害なら、1分ほど待ってこのセルを再実行")
+    print("  4) /kaggle/working の空き容量（保存できるのは 20GB まで）")
+    raise
 else:
-    # Kaggle 同梱の CUDA 対応 torch をそのまま使い、軽い依存だけ入れる（速いが非公式）
-    pip("--no-deps", str(REPO_DIR))
-    pip("transformers==4.57.6", "huggingface-hub==0.36.2", "safetensors==0.7.0",
-        "tiktoken==0.12.0", "soundfile==0.13.1", "accelerate==1.13.0")
+    import torch
+    print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
+    if not torch.cuda.is_available():
+        print(">>> GPU が見えていません。Settings -> Accelerator を GPU T4 x2 にして Restart session してください。")
+'''
 
-import torch  # noqa: E402
-print("torch", torch.__version__, "| CUDA", torch.version.cuda, "| available:", torch.cuda.is_available())
-"""
 
 DRIVER_CELL_PREFIX = """%%writefile /kaggle/working/yue2_kaggle.py
 """

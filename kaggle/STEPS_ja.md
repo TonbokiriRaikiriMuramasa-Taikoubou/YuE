@@ -45,6 +45,13 @@
 - **Share は Private のまま**にしておきます（Save Version のときに Public にしない）。
   生成した歌詞・音声を公開したくなければ必須です。
 
+> ⚠️ **Import したノートは Internet が既定で Off です。**
+> これを On にしないと `git clone` が
+> `fatal: unable to access 'https://github.com/...': Could not resolve host: github.com`
+> で失敗します（セル2の接続チェックでも NG と出ます）。
+> On に切り替えた直後にまだ失敗するときは **Run → Restart session** してから、
+> 上から順に実行し直してください。
+
 ---
 
 ## 3. セルを上から順に実行する
@@ -125,7 +132,7 @@ from IPython.display import FileLink; FileLink(f"{OUTDIR}/audio.mp3")
 | 症状 | 原因 / 対処 |
 |---|---|
 | Accelerator に GPU の選択肢が無い | 電話番号認証が未完了（§0-2） |
-| インストールでエラー / モデルが落ちない | Settings の **Internet が Off** のまま |
+| `Could not resolve host: github.com` / `pip` が落ちる / モデルが落ちてこない | **Settings の Internet が Off**。Import したノートは既定で Off です。**On** に変更 → 直らない場合は **Run → Restart session** → 上から実行。セル2の接続チェックで OK を確認できます |
 | 起動時に BF16 エラー | **P100 を引いた**。Settings で T4 x2 に変更 → カーネル再起動 |
 | 途中で止まった（20 分放置） | 対話実行の制限。**Commit 実行**に切り替える |
 | 同じ設定で再実行したら一瞬で終わった | 前回の続きから再開した正常動作。`already-complete` と出ます |
